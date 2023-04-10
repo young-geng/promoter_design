@@ -1,6 +1,8 @@
 from functools import partial
 import numpy as np
 import mlxu
+from tqdm import tqdm, trange
+from pprint import pprint, pformat
 
 import jax
 import jax.numpy as jnp
@@ -164,18 +166,20 @@ def main(argv):
     eval_iterator = iter(eval_dataset)
     rng = jax_utils.next_rng()
 
-    for step in range(FLAGS.total_steps):
+    for step in trange(FLAGS.total_steps, ncols=0):
         train_state, rng, train_metrics = train_step(train_state, rng, next(train_iterator))
         if step % FLAGS.log_freq == 0:
             train_metrics = jax.device_get(train_metrics)
             train_metrics['step'] = step
             logger.log(train_metrics)
+            tqdm.write(pformat(train_metrics))
 
         if step % FLAGS.eval_freq == 0:
             eval_metrics = eval_step(train_state, rng, next(eval_iterator))
             eval_metrics = jax.device_get(eval_metrics)
             eval_metrics['step'] = step
             logger.log(eval_metrics)
+            tqdm.write(pformat(eval_metrics))
 
 
 if __name__ == '__main__':
