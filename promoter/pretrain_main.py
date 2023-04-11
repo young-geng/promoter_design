@@ -15,16 +15,20 @@ import mlxu.jax_utils as jax_utils
 
 from .data import PretrainDataset
 from .model import PretrainNetwork, get_weight_decay_mask
+from .utils import average_metrics
 
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=42,
     total_steps=100000,
-    log_freq=50,
+    log_freq=20,
     eval_freq=1000,
+    eval_steps=30,
+    save_model=False,
+    accumulate_gradient_steps=1,
     lr=1e-4,
     lr_warmup_steps=1000,
-    weight_decay=1e-5,
+    weight_decay=1e-3,
     k562_loss_weight=1.0,
     hepg2_loss_weight=1.0,
     mpra_loss_weight=1.0,
@@ -54,7 +58,7 @@ def main(argv):
         rngs=jax_utils.next_rng(model.rng_keys()),
     )
 
-    learning_rate = optax.warmup_cosine_decay_schedule(
+    learning_rate_schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=FLAGS.lr,
         warmup_steps=FLAGS.lr_warmup_steps,
@@ -65,11 +69,13 @@ def main(argv):
     optimizer = optax.chain(
         optax.clip_by_global_norm(FLAGS.clip_gradient),
         optax.adamw(
-            learning_rate=learning_rate,
+            learning_rate=learning_rate_schedule,
             weight_decay=FLAGS.weight_decay,
             mask=get_weight_decay_mask(['bias']),
         )
     )
+    if FLAGS.accumulate_gradient_steps > 1:
+        optimizer = optax.MultiSteps(optimizer, FLAGS.accumulate_gradient_steps)
 
     train_state = TrainState.create(
         params=params,
@@ -81,6 +87,13 @@ def main(argv):
         sure_k562_labels = batch['sure_k562_labels']
         sure_hepg2_labels = batch['sure_hepg2_labels']
         mpra_output = batch['mpra_output']
+
+        sure_k562_accuracy = jnp.mean(
+            (jnp.argmax(sure_k562_logits, axis=-1) == sure_k562_labels).astype(jnp.float32)
+        ) * 4
+        sure_hepg2_accuracy = jnp.mean(
+            (jnp.argmax(sure_hepg2_logits, axis=-1) == sure_hepg2_labels).astype(jnp.float32)
+        ) * 4
 
         sure_k562_logits = einops.rearrange(sure_k562_logits, '... (h d) -> ... h d', h=4)
         sure_hepg2_logits = einops.rearrange(sure_hepg2_logits, '... (h d) -> ... h d', h=4)
@@ -101,7 +114,7 @@ def main(argv):
             sure_hepg2_loss * FLAGS.hepg2_loss_weight +
             mpra_loss * FLAGS.mpra_loss_weight
         )
-        return loss, sure_k562_loss, sure_hepg2_loss, mpra_loss
+        return loss, locals()
 
     @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
     def train_step(train_state, rng, batch):
@@ -119,19 +132,22 @@ def main(argv):
                 deterministic=False,
                 rngs=rng_generator(model.rng_keys()),
             )
-            loss, sure_k562_loss, sure_hepg2_loss, mpra_loss = compute_loss(
+            loss, aux_values = compute_loss(
                 batch, sure_k562_logits, sure_hepg2_logits, mpra_prediction
             )
-            return loss, locals()
+            return loss, aux_values
 
         (_, aux_values), grads = jax.value_and_grad(
             loss_fn, has_aux=True
         )(train_state.params)
         grads = jax.lax.pmean(grads, axis_name='dp')
 
+        aux_values['learning_rate'] = learning_rate_schedule(train_state.step)
+
         metrics = jax_utils.collect_metrics(
             aux_values,
-            ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss'],
+            ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss',
+             'sure_k562_accuracy', 'sure_hepg2_accuracy'],
             prefix='train',
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
@@ -154,13 +170,14 @@ def main(argv):
             deterministic=True,
             rngs=rng_generator(model.rng_keys()),
         )
-        loss, sure_k562_loss, sure_hepg2_loss, mpra_loss = compute_loss(
+        loss, aux_values = compute_loss(
             batch, sure_k562_logits, sure_hepg2_logits, mpra_prediction
         )
 
         metrics = jax_utils.collect_metrics(
-            locals(),
-            ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss'],
+            aux_values,
+            ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss',
+             'sure_k562_accuracy', 'sure_hepg2_accuracy'],
             prefix='eval',
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
@@ -174,6 +191,8 @@ def main(argv):
     )
     train_state = replicate(train_state)
 
+    best_eval_loss = np.inf
+
     for step in trange(FLAGS.total_steps, ncols=0):
         train_state, rng, train_metrics = train_step(
             train_state, rng, next(train_iterator)
@@ -185,10 +204,23 @@ def main(argv):
             tqdm.write(pformat(train_metrics))
 
         if step % FLAGS.eval_freq == 0:
-            eval_metrics, rng = eval_step(
-                train_state, rng, next(eval_iterator)
-            )
-            eval_metrics = jax.device_get(unreplicate(eval_metrics))
+            eval_metrics = []
+            for _ in range(FLAGS.eval_steps):
+                metrics, rng = eval_step(
+                    train_state, rng, next(eval_iterator)
+                )
+                eval_metrics.append(unreplicate(metrics))
+            eval_metrics = average_metrics(jax.device_get(eval_metrics))
+
+            if eval_metrics['eval/loss'] < best_eval_loss:
+                best_eval_loss = eval_metrics['eval/loss']
+                if FLAGS.save_model:
+                    logger.save_pickle(
+                        jax.device_get(unreplicate(train_state).params),
+                        'best_params.pkl',
+                    )
+
+            eval_metrics['eval/best_loss'] = best_eval_loss
             eval_metrics['step'] = step
             logger.log(eval_metrics)
             tqdm.write(pformat(eval_metrics))
