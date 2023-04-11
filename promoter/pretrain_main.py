@@ -6,11 +6,8 @@ from pprint import pprint, pformat
 
 import jax
 import jax.numpy as jnp
-from jax.experimental import PartitionSpec as PS
-from jax.experimental.maps import Mesh
-from jax.experimental.pjit import pjit
 import flax
-from flax import linen as nn
+from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
 import optax
 import einops
@@ -44,6 +41,7 @@ def main(argv):
         variant=mlxu.get_user_flags(FLAGS, FLAGS_DEF),
     )
     jax_utils.set_random_seed(FLAGS.seed)
+    jax_device_count = jax.device_count()
 
     train_dataset = PretrainDataset(FLAGS.train_data)
     eval_dataset = PretrainDataset(FLAGS.eval_data)
@@ -105,12 +103,7 @@ def main(argv):
         )
         return loss, sure_k562_loss, sure_hepg2_loss, mpra_loss
 
-    @partial(
-        pjit,
-        in_axis_resources=(None, None, PS('dp')),
-        out_axis_resources=(None, None, None),
-        donate_argnums=(0,),
-    )
+    @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
     def train_step(train_state, rng, batch):
         rng_generator = jax_utils.JaxRNG(rng)
         sure_sequences = batch['sure_sequences']
@@ -134,21 +127,19 @@ def main(argv):
         (_, aux_values), grads = jax.value_and_grad(
             loss_fn, has_aux=True
         )(train_state.params)
+        grads = jax.lax.pmean(grads, axis_name='dp')
 
         metrics = jax_utils.collect_metrics(
             aux_values,
             ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss'],
             prefix='train',
         )
+        metrics = jax.lax.pmean(metrics, axis_name='dp')
 
         train_state = train_state.apply_gradients(grads=grads)
         return train_state, rng_generator(), metrics
 
-    @partial(
-        pjit,
-        in_axis_resources=(None, None, PS('dp')),
-        out_axis_resources=(None, None),
-    )
+    @partial(jax.pmap, axis_name='dp', donate_argnums=1)
     def eval_step(train_state, rng, batch):
         rng_generator = jax_utils.JaxRNG(rng)
         sure_sequences = batch['sure_sequences']
@@ -172,27 +163,35 @@ def main(argv):
             ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss'],
             prefix='eval',
         )
+        metrics = jax.lax.pmean(metrics, axis_name='dp')
         return metrics, rng_generator()
 
-    train_iterator = iter(train_dataset)
-    eval_iterator = iter(eval_dataset)
-    rng = jax_utils.next_rng()
+    train_iterator = train_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+    eval_iterator = eval_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+    rng = jax.device_put_sharded(
+        list(jax_utils.next_rng(jax.device_count())),
+        jax.devices(),
+    )
+    train_state = replicate(train_state)
 
-    with Mesh(np.array(jax.devices()), ['dp']):
-        for step in trange(FLAGS.total_steps, ncols=0):
-            train_state, rng, train_metrics = train_step(train_state, rng, next(train_iterator))
-            if step % FLAGS.log_freq == 0:
-                train_metrics = jax.device_get(train_metrics)
-                train_metrics['step'] = step
-                logger.log(train_metrics)
-                tqdm.write(pformat(train_metrics))
+    for step in trange(FLAGS.total_steps, ncols=0):
+        train_state, rng, train_metrics = train_step(
+            train_state, rng, next(train_iterator)
+        )
+        if step % FLAGS.log_freq == 0:
+            train_metrics = jax.device_get(unreplicate(train_metrics))
+            train_metrics['step'] = step
+            logger.log(train_metrics)
+            tqdm.write(pformat(train_metrics))
 
-            if step % FLAGS.eval_freq == 0:
-                eval_metrics, rng = eval_step(train_state, rng, next(eval_iterator))
-                eval_metrics = jax.device_get(eval_metrics)
-                eval_metrics['step'] = step
-                logger.log(eval_metrics)
-                tqdm.write(pformat(eval_metrics))
+        if step % FLAGS.eval_freq == 0:
+            eval_metrics, rng = eval_step(
+                train_state, rng, next(eval_iterator)
+            )
+            eval_metrics = jax.device_get(unreplicate(eval_metrics))
+            eval_metrics['step'] = step
+            logger.log(eval_metrics)
+            tqdm.write(pformat(eval_metrics))
 
 
 if __name__ == '__main__':
