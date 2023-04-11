@@ -30,10 +30,10 @@ class PretrainDataset(object):
             mpra_indices = np.random.choice(mpra_size, self.config.batch_size)
             batch = {
                 'sure_sequences': self.data['sure_sequences'][sure_indices].astype(np.int32),
-                'sure_k562_labels': self.data['sure_k562_labels'][sure_indices],
-                'sure_hepg2_labels': self.data['sure_hepg2_labels'][sure_indices],
+                'sure_k562_labels': self.data['sure_k562_labels'][sure_indices].astype(np.int32),
+                'sure_hepg2_labels': self.data['sure_hepg2_labels'][sure_indices].astype(np.int32),
                 'mpra_sequences': self.data['mpra_sequences'][mpra_indices].astype(np.int32),
-                'mpra_output': self.data['mpra_output'][mpra_indices],
+                'mpra_output': self.data['mpra_output'][mpra_indices].astype(np.float32),
             }
             if pmap_axis_dim is not None:
                 batch = reshape_batch_for_pmap(batch, pmap_axis_dim)

@@ -147,7 +147,7 @@ def main(argv):
         metrics = jax_utils.collect_metrics(
             aux_values,
             ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss',
-             'sure_k562_accuracy', 'sure_hepg2_accuracy'],
+             'sure_k562_accuracy', 'sure_hepg2_accuracy', 'learning_rate'],
             prefix='train',
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
