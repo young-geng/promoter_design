@@ -14,8 +14,8 @@ import einops
 import mlxu.jax_utils as jax_utils
 
 from .data import PretrainDataset
-from .model import PretrainNetwork, get_weight_decay_mask
-from .utils import average_metrics
+from .model import PretrainNetwork
+from .utils import average_metrics, global_norm, get_weight_decay_mask
 
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
@@ -143,11 +143,14 @@ def main(argv):
         grads = jax.lax.pmean(grads, axis_name='dp')
 
         aux_values['learning_rate'] = learning_rate_schedule(train_state.step)
+        aux_values['grad_norm'] = global_norm(grads)
+        aux_values['param_norm'] = global_norm(train_state.params)
 
         metrics = jax_utils.collect_metrics(
             aux_values,
             ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss',
-             'sure_k562_accuracy', 'sure_hepg2_accuracy', 'learning_rate'],
+             'sure_k562_accuracy', 'sure_hepg2_accuracy', 'learning_rate',
+             'grad_norm', 'param_norm'],
             prefix='train',
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
