@@ -13,8 +13,8 @@ import optax
 import einops
 import mlxu.jax_utils as jax_utils
 
-from .data import PretrainDataset
-from .model import PretrainNetwork
+from .data import FinetuneDataset
+from .model import FinetuneNetwork
 from .utils import average_metrics, global_norm, get_weight_decay_mask
 
 
@@ -33,9 +33,10 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     hepg2_loss_weight=1.0,
     mpra_loss_weight=1.0,
     clip_gradient=10.0,
-    pretrain_network=PretrainNetwork.get_default_config(),
-    train_data=PretrainDataset.get_default_config(),
-    eval_data=PretrainDataset.get_default_config(),
+    load_pretrained='',
+    finetune_network=FinetuneNetwork.get_default_config(),
+    train_data=FinetuneDataset.get_default_config(),
+    eval_data=FinetuneDataset.get_default_config(),
     logger=mlxu.WandBLogger.get_default_config(),
 )
 
@@ -48,16 +49,22 @@ def main(argv):
     jax_utils.set_random_seed(FLAGS.seed)
     jax_device_count = jax.device_count()
 
-    train_dataset = PretrainDataset(FLAGS.train_data)
-    eval_dataset = PretrainDataset(FLAGS.eval_data)
+    train_dataset = FinetuneDataset(FLAGS.train_data)
+    eval_dataset = FinetuneDataset(FLAGS.eval_data)
 
-    model = PretrainNetwork(FLAGS.pretrain_network)
+    model = FinetuneNetwork(FLAGS.finetune_network)
     params = model.init(
-        sure_inputs=jnp.zeros((1, 1000, 5)),
-        mpra_inputs=jnp.zeros((1, 1000, 5)),
+        inputs=jnp.zeros((1, 1000, 5)),
         deterministic=False,
         rngs=jax_utils.next_rng(model.rng_keys()),
     )
+
+    if FLAGS.load_pretrained != '':
+        params = flax.core.unfreeze(params)
+        params['params']['backbone'] = jax.device_put(
+            mlxu.load_pickle(FLAGS.load_pretrained)['params']['backbone']
+        )
+        params = flax.core.freeze(params)
 
     learning_rate_schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
@@ -84,57 +91,26 @@ def main(argv):
         apply_fn=None
     )
 
-    def compute_loss(batch, sure_k562_logits, sure_hepg2_logits, mpra_prediction):
-        sure_k562_labels = batch['sure_k562_labels']
-        sure_hepg2_labels = batch['sure_hepg2_labels']
-        mpra_output = batch['mpra_output']
-
-        sure_k562_accuracy = jnp.mean(
-            (jnp.argmax(sure_k562_logits, axis=-1) == sure_k562_labels).astype(jnp.float32)
-        ) * 4
-        sure_hepg2_accuracy = jnp.mean(
-            (jnp.argmax(sure_hepg2_logits, axis=-1) == sure_hepg2_labels).astype(jnp.float32)
-        ) * 4
-
-        sure_k562_logits = einops.rearrange(sure_k562_logits, '... (h d) -> ... h d', h=4)
-        sure_hepg2_logits = einops.rearrange(sure_hepg2_logits, '... (h d) -> ... h d', h=4)
-        sure_k562_logp = jax.nn.log_softmax(sure_k562_logits, axis=-1)
-        sure_hepg2_logp = jax.nn.log_softmax(sure_hepg2_logits, axis=-1)
-        sure_k562_logp = einops.rearrange(sure_k562_logp, '... h d -> ... (h d)')
-        sure_hepg2_logp = einops.rearrange(sure_hepg2_logp, '... h d -> ... (h d)')
-
-        sure_k562_onehot = jax.nn.one_hot(sure_k562_labels, 20)
-        sure_hepg2_onehot = jax.nn.one_hot(sure_hepg2_labels, 20)
-
-        sure_k562_loss = -jnp.mean(jnp.sum(sure_k562_onehot * sure_k562_logp, axis=-1))
-        sure_hepg2_loss = -jnp.mean(jnp.sum(sure_hepg2_onehot * sure_hepg2_logp, axis=-1))
-        mpra_loss = jnp.mean(jnp.square(mpra_prediction - mpra_output))
-
-        loss = (
-            sure_k562_loss * FLAGS.k562_loss_weight +
-            sure_hepg2_loss * FLAGS.hepg2_loss_weight +
-            mpra_loss * FLAGS.mpra_loss_weight
-        )
+    def compute_loss(batch, thp1_output, jurkat_output, k562_output):
+        thp1_loss = jnp.mean(jnp.square(thp1_output - batch['thp1_output']))
+        jurkat_loss = jnp.mean(jnp.square(jurkat_output - batch['jurkat_output']))
+        k562_loss = jnp.mean(jnp.square(k562_output - batch['k562_output']))
+        loss = thp1_loss + jurkat_loss + k562_loss
         return loss, locals()
 
     @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
     def train_step(train_state, rng, batch):
         rng_generator = jax_utils.JaxRNG(rng)
-        sure_sequences = batch['sure_sequences']
-        mpra_sequences = batch['mpra_sequences']
 
         def loss_fn(params):
-            sure_inputs = jax.nn.one_hot(sure_sequences, 5, dtype=jnp.float32)
-            mpra_inputs = jax.nn.one_hot(mpra_sequences, 5, dtype=jnp.float32)
-            sure_k562_logits, sure_hepg2_logits, mpra_prediction = model.apply(
+            thp1_output, jurkat_output, k562_output = model.apply(
                 params,
-                sure_inputs=sure_inputs,
-                mpra_inputs=mpra_inputs,
+                inputs=jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32),
                 deterministic=False,
                 rngs=rng_generator(model.rng_keys()),
             )
             loss, aux_values = compute_loss(
-                batch, sure_k562_logits, sure_hepg2_logits, mpra_prediction
+                batch, thp1_output, jurkat_output, k562_output
             )
             return loss, aux_values
 
@@ -149,9 +125,8 @@ def main(argv):
 
         metrics = jax_utils.collect_metrics(
             aux_values,
-            ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss',
-             'sure_k562_accuracy', 'sure_hepg2_accuracy', 'learning_rate',
-             'grad_norm', 'param_norm'],
+            ['thp1_loss', 'jurkat_loss', 'k562_loss', 'loss',
+             'learning_rate', 'grad_norm', 'param_norm'],
             prefix='train',
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
@@ -162,26 +137,20 @@ def main(argv):
     @partial(jax.pmap, axis_name='dp', donate_argnums=1)
     def eval_step(train_state, rng, batch):
         rng_generator = jax_utils.JaxRNG(rng)
-        sure_sequences = batch['sure_sequences']
-        mpra_sequences = batch['mpra_sequences']
 
-        sure_inputs = jax.nn.one_hot(sure_sequences, 5, dtype=jnp.float32)
-        mpra_inputs = jax.nn.one_hot(mpra_sequences, 5, dtype=jnp.float32)
-        sure_k562_logits, sure_hepg2_logits, mpra_prediction = model.apply(
+        thp1_output, jurkat_output, k562_output = model.apply(
             train_state.params,
-            sure_inputs=sure_inputs,
-            mpra_inputs=mpra_inputs,
-            deterministic=True,
+            inputs=jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32),
+            deterministic=False,
             rngs=rng_generator(model.rng_keys()),
         )
         loss, aux_values = compute_loss(
-            batch, sure_k562_logits, sure_hepg2_logits, mpra_prediction
+            batch, thp1_output, jurkat_output, k562_output
         )
 
         metrics = jax_utils.collect_metrics(
             aux_values,
-            ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss',
-             'sure_k562_accuracy', 'sure_hepg2_accuracy'],
+            ['thp1_loss', 'jurkat_loss', 'k562_loss', 'loss'],
             prefix='eval',
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')

@@ -1,4 +1,3 @@
-import re
 import numpy as np
 import mlxu
 
@@ -8,7 +7,6 @@ import flax
 from flax import linen as nn
 import einops
 import mlxu.jax_utils as jax_utils
-
 
 
 class MLP(nn.Module):
@@ -94,73 +92,92 @@ class TransformerBlock(nn.Module):
 
 
 class Backbone(nn.Module):
-    embedding_dim: int = 1024
-    transformer_blocks: int = 5
-    n_heads: int = 8
-    dropout: float = 0.1
+    config_updates: ... = None
+
+    @staticmethod
+    @nn.nowrap
+    def get_default_config(updates=None):
+        config = mlxu.config_dict()
+        config.embedding_dim = 1024
+        config.transformer_blocks = 5
+        config.n_heads = 8
+        config.dropout = 0.1
+        if updates is not None:
+            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
+        return config
+
+    def setup(self):
+        self.config = self.get_default_config(self.config_updates)
 
     @nn.compact
     def __call__(self, x, deterministic=False):
-        x = ConvBlock(channels=256, dropout=self.dropout)(x, deterministic=deterministic)
-        x = ConvBlock(channels=512, dropout=self.dropout)(x, deterministic=deterministic)
-        x = ConvBlock(channels=self.embedding_dim, dropout=self.dropout)(x, deterministic=deterministic)
+        x = ConvBlock(channels=256, dropout=self.config.dropout)(x, deterministic=deterministic)
+        x = ConvBlock(channels=512, dropout=self.config.dropout)(x, deterministic=deterministic)
+        x = ConvBlock(channels=self.config.embedding_dim, dropout=self.config.dropout)(x, deterministic=deterministic)
         cls_embedding = self.param(
             "cls_embedding",
-            nn.initializers.normal(stddev=0.02), (1, 1, self.embedding_dim)
+            nn.initializers.normal(stddev=0.02), (1, 1, self.config.embedding_dim)
         )
-        cls_embedding = jnp.broadcast_to(cls_embedding, (x.shape[0], 1, self.embedding_dim))
+        cls_embedding = jnp.broadcast_to(cls_embedding, (x.shape[0], 1, self.config.embedding_dim))
         x = jnp.concatenate([cls_embedding, x], axis=1)
 
-        for _ in range(self.transformer_blocks):
+        for _ in range(self.config.transformer_blocks):
             x = TransformerBlock(
-                embedding_dim=self.embedding_dim,
-                num_heads=self.n_heads,
-                mlp_dim=4 * self.embedding_dim,
-                dropout=self.dropout,
+                embedding_dim=self.config.embedding_dim,
+                num_heads=self.config.n_heads,
+                mlp_dim=4 * self.config.embedding_dim,
+                dropout=self.config.dropout,
             )(x, deterministic=deterministic)
 
         return x[..., 0, :]
 
 
 class PretrainNetwork(nn.Module):
-    embedding_dim: int = 1024
-    transformer_blocks: int = 5
-    n_heads: int = 8
-    dropout: float = 0.1
-    output_head_num_layers: int = 2
-    output_head_hidden_dim: int = 512
+    config_updates: ... = None
+
+    @staticmethod
+    @nn.nowrap
+    def get_default_config(updates=None):
+        config = mlxu.config_dict()
+        config.output_head_num_layers = 2
+        config.output_head_hidden_dim = 512
+        config.backbone = Backbone.get_default_config()
+        if updates is not None:
+            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
+        return config
+
+    def setup(self):
+        self.config = self.get_default_config(self.config_updates)
+        self.backbone = Backbone(self.config.backbone)
+        self.output_ln = nn.LayerNorm()
+        self.k562_head = MLP(
+            output_dim=20,
+            hidden_dim=self.config.output_head_hidden_dim,
+            num_layers=self.config.output_head_num_layers
+        )
+        self.hepg2_head = MLP(
+            output_dim=20,
+            hidden_dim=self.config.output_head_hidden_dim,
+            num_layers=self.config.output_head_num_layers
+        )
+        self.mpra_head = MLP(
+            output_dim=12,
+            hidden_dim=self.config.output_head_hidden_dim,
+            num_layers=self.config.output_head_num_layers
+        )
 
     @nn.compact
     def __call__(self, sure_inputs, mpra_inputs, deterministic=False):
-        backbone = Backbone(
-            embedding_dim=self.embedding_dim,
-            transformer_blocks=self.transformer_blocks,
-            n_heads=self.n_heads,
-            dropout=self.dropout,
+        sure_x = self.output_ln(
+            self.backbone(sure_inputs, deterministic=deterministic)
         )
-        sure_x = nn.LayerNorm()(
-            backbone(sure_inputs, deterministic=deterministic)
-        )
-        sure_k562_ouptut = MLP(
-            output_dim=20,
-            hidden_dim=self.output_head_hidden_dim,
-            num_layers=self.output_head_num_layers
-        )(sure_x)
-        sure_hepg2_ouptut = MLP(
-            output_dim=20,
-            hidden_dim=self.output_head_hidden_dim,
-            num_layers=self.output_head_num_layers
-        )(sure_x)
+        sure_k562_ouptut = self.k562_head(sure_x)
+        sure_hepg2_ouptut = self.hepg2_head(sure_x)
 
-        mpra_x = nn.LayerNorm()(
-            backbone(mpra_inputs, deterministic=deterministic)
+        mpra_x = self.output_ln(
+            self.backbone(mpra_inputs, deterministic=deterministic)
         )
-
-        mpra_output = MLP(
-            output_dim=12,
-            hidden_dim=self.output_head_hidden_dim,
-            num_layers=self.output_head_num_layers
-        )(mpra_x)
+        mpra_output = self.mpra_head(mpra_x)
 
         return sure_k562_ouptut, sure_hepg2_ouptut, mpra_output
 
@@ -169,17 +186,49 @@ class PretrainNetwork(nn.Module):
         return ('params', 'dropout')
 
 
-def get_weight_decay_mask(exclusions):
-    """ Return a weight decay mask function that computes the pytree masks
-        according to the given exclusion rules.
-    """
-    def decay(name, _):
-        for rule in exclusions:
-            if re.search(rule, name) is not None:
-                return False
-        return True
+class FinetuneNetwork(nn.Module):
+    config_updates: ... = None
 
-    def weight_decay_mask(params):
-        return jax_utils.named_tree_map(decay, params, sep='/')
+    @staticmethod
+    @nn.nowrap
+    def get_default_config(updates=None):
+        config = mlxu.config_dict()
+        config.output_head_num_layers = 2
+        config.output_head_hidden_dim = 512
+        config.backbone = Backbone.get_default_config()
+        if updates is not None:
+            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
+        return config
 
-    return weight_decay_mask
+    def setup(self):
+        self.config = self.get_default_config(self.config_updates)
+        self.backbone = Backbone(self.config.backbone)
+        self.output_ln = nn.LayerNorm()
+        self.thp1_head = MLP(
+            output_dim=1,
+            hidden_dim=self.config.output_head_hidden_dim,
+            num_layers=self.config.output_head_num_layers
+        )
+        self.jurkat_head = MLP(
+            output_dim=1,
+            hidden_dim=self.config.output_head_hidden_dim,
+            num_layers=self.config.output_head_num_layers
+        )
+        self.k562_head = MLP(
+            output_dim=1,
+            hidden_dim=self.config.output_head_hidden_dim,
+            num_layers=self.config.output_head_num_layers
+        )
+
+    @nn.compact
+    def __call__(self, inputs, deterministic=False):
+        x = self.backbone(inputs, deterministic=deterministic)
+        x = self.output_ln(x)
+        thp1_output = self.thp1_head(x).squeeze(-1)
+        jurkat_output = self.jurkat_head(x).squeeze(-1)
+        k562_output = self.k562_head(x).squeeze(-1)
+        return thp1_output, jurkat_output, k562_output
+
+    @nn.nowrap
+    def rng_keys(self):
+        return ('params', 'dropout')
