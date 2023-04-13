@@ -102,6 +102,7 @@ class Backbone(nn.Module):
         config.transformer_blocks = 5
         config.n_heads = 8
         config.dropout = 0.1
+        config.ignore_padding = True
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
         return config
@@ -111,6 +112,8 @@ class Backbone(nn.Module):
 
     @nn.compact
     def __call__(self, x, deterministic=False):
+        if self.config.ignore_padding:
+            x = x[:, :, :4]
         x = ConvBlock(channels=256, dropout=self.config.dropout)(x, deterministic=deterministic)
         x = ConvBlock(channels=512, dropout=self.config.dropout)(x, deterministic=deterministic)
         x = ConvBlock(channels=self.config.embedding_dim, dropout=self.config.dropout)(x, deterministic=deterministic)
