@@ -54,7 +54,7 @@ def main(argv):
 
     model = FinetuneNetwork(FLAGS.finetune_network)
     params = model.init(
-        inputs=jnp.zeros((1, 1000, 5)),
+        inputs=jnp.zeros((1, 1000, 4)),
         deterministic=False,
         rngs=jax_utils.next_rng(model.rng_keys()),
     )
@@ -105,7 +105,7 @@ def main(argv):
         def loss_fn(params):
             thp1_output, jurkat_output, k562_output = model.apply(
                 params,
-                inputs=jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32),
+                inputs=jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32)[:, :, :4],
                 deterministic=False,
                 rngs=rng_generator(model.rng_keys()),
             )
@@ -140,7 +140,7 @@ def main(argv):
 
         thp1_output, jurkat_output, k562_output = model.apply(
             train_state.params,
-            inputs=jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32),
+            inputs=jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32)[:, :, :4],
             deterministic=False,
             rngs=rng_generator(model.rng_keys()),
         )

@@ -53,8 +53,8 @@ def main(argv):
 
     model = PretrainNetwork(FLAGS.pretrain_network)
     params = model.init(
-        sure_inputs=jnp.zeros((1, 1000, 5)),
-        mpra_inputs=jnp.zeros((1, 1000, 5)),
+        sure_inputs=jnp.zeros((1, 1000, 4)),
+        mpra_inputs=jnp.zeros((1, 1000, 4)),
         deterministic=False,
         rngs=jax_utils.next_rng(model.rng_keys()),
     )
@@ -124,8 +124,8 @@ def main(argv):
         mpra_sequences = batch['mpra_sequences']
 
         def loss_fn(params):
-            sure_inputs = jax.nn.one_hot(sure_sequences, 5, dtype=jnp.float32)
-            mpra_inputs = jax.nn.one_hot(mpra_sequences, 5, dtype=jnp.float32)
+            sure_inputs = jax.nn.one_hot(sure_sequences, 5, dtype=jnp.float32)[:, :, :4]
+            mpra_inputs = jax.nn.one_hot(mpra_sequences, 5, dtype=jnp.float32)[:, :, :4]
             sure_k562_logits, sure_hepg2_logits, mpra_prediction = model.apply(
                 params,
                 sure_inputs=sure_inputs,
@@ -165,8 +165,8 @@ def main(argv):
         sure_sequences = batch['sure_sequences']
         mpra_sequences = batch['mpra_sequences']
 
-        sure_inputs = jax.nn.one_hot(sure_sequences, 5, dtype=jnp.float32)
-        mpra_inputs = jax.nn.one_hot(mpra_sequences, 5, dtype=jnp.float32)
+        sure_inputs = jax.nn.one_hot(sure_sequences, 5, dtype=jnp.float32)[:, :, :4]
+        mpra_inputs = jax.nn.one_hot(mpra_sequences, 5, dtype=jnp.float32)[:, :, :4]
         sure_k562_logits, sure_hepg2_logits, mpra_prediction = model.apply(
             train_state.params,
             sure_inputs=sure_inputs,
