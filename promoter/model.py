@@ -138,10 +138,10 @@ class Backbone(nn.Module):
         config.embedding_dim = 1024
         config.mlp_dim_ratio = 4
         config.transformer_blocks = 5
-        config.n_heads = 8
+        config.num_heads = 8
         config.dropout = 0.1
         config.input_encoder = 'cnn'
-        config.use_position_embedding = False
+        config.use_position_embedding = True
         config.max_position_embeddings = 4096
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
@@ -170,7 +170,7 @@ class Backbone(nn.Module):
         for _ in range(self.config.transformer_blocks):
             x = TransformerBlock(
                 embedding_dim=self.config.embedding_dim,
-                num_heads=self.config.n_heads,
+                num_heads=self.config.num_heads,
                 mlp_dim=self.config.mlp_dim_ratio * self.config.embedding_dim,
                 dropout=self.config.dropout,
                 use_position_embedding=self.config.use_position_embedding,
