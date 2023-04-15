@@ -111,12 +111,34 @@ def main(argv):
         sure_hepg2_loss = -jnp.mean(jnp.sum(sure_hepg2_onehot * sure_hepg2_logp, axis=-1))
         mpra_loss = jnp.mean(jnp.square(mpra_prediction - mpra_output))
 
+        gathered_mpra_prediction = jax.lax.all_gather(
+            mpra_prediction, axis_name='dp'
+        ).reshape(-1)
+        gathered_mpra_output = jax.lax.all_gather(
+            mpra_output, axis_name='dp'
+        ).reshape(-1)
+
+        mpra_corr = jnp.corrcoef(gathered_mpra_prediction, gathered_mpra_output)[0, 1]
+        mpra_rank_corr = jnp.corrcoef(
+            jnp.argsort(gathered_mpra_prediction), jnp.argsort(gathered_mpra_output)
+        )[0, 1]
+        mpra_r2 = (
+            1.0 - jnp.sum(jnp.square(gathered_mpra_output - gathered_mpra_prediction))
+            / jnp.sum(jnp.square(gathered_mpra_output - jnp.mean(gathered_mpra_output)))
+        )
+
         loss = (
             sure_k562_loss * FLAGS.k562_loss_weight +
             sure_hepg2_loss * FLAGS.hepg2_loss_weight +
             mpra_loss * FLAGS.mpra_loss_weight
         )
         return loss, locals()
+
+    metric_keys = [
+        'sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss',
+        'sure_k562_accuracy', 'sure_hepg2_accuracy',
+        'mpra_corr', 'mpra_rank_corr', 'mpra_r2',
+    ]
 
     @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
     def train_step(train_state, rng, batch):
@@ -154,9 +176,7 @@ def main(argv):
 
         metrics = jax_utils.collect_metrics(
             aux_values,
-            ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss',
-             'sure_k562_accuracy', 'sure_hepg2_accuracy', 'learning_rate',
-             'grad_norm', 'param_norm'],
+            metric_keys + ['learning_rate', 'grad_norm', 'param_norm'],
             prefix='train',
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
@@ -184,10 +204,7 @@ def main(argv):
         )
 
         metrics = jax_utils.collect_metrics(
-            aux_values,
-            ['sure_k562_loss', 'sure_hepg2_loss', 'mpra_loss', 'loss',
-             'sure_k562_accuracy', 'sure_hepg2_accuracy'],
-            prefix='eval',
+            aux_values, metric_keys, prefix='eval'
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
         return metrics, rng_generator()
