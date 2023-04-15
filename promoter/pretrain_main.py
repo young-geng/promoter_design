@@ -25,6 +25,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     eval_freq=1000,
     eval_steps=30,
     save_model=False,
+    remat=True,
     accumulate_gradient_steps=1,
     lr=1e-4,
     lr_warmup_steps=1000,
@@ -120,12 +121,11 @@ def main(argv):
     @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
     def train_step(train_state, rng, batch):
         rng_generator = jax_utils.JaxRNG(rng)
-        sure_sequences = batch['sure_sequences']
-        mpra_sequences = batch['mpra_sequences']
 
-        def loss_fn(params):
-            sure_inputs = jax.nn.one_hot(sure_sequences, 5, dtype=jnp.float32)[:, :, :4]
-            mpra_inputs = jax.nn.one_hot(mpra_sequences, 5, dtype=jnp.float32)[:, :, :4]
+        def loss_fn(params, rng, batch):
+            rng_generator = jax_utils.JaxRNG(rng)
+            sure_inputs = jax.nn.one_hot(batch['sure_sequences'], 5, dtype=jnp.float32)[:, :, :4]
+            mpra_inputs = jax.nn.one_hot(batch['mpra_sequences'], 5, dtype=jnp.float32)[:, :, :4]
             sure_k562_logits, sure_hepg2_logits, mpra_prediction = model.apply(
                 params,
                 sure_inputs=sure_inputs,
@@ -138,9 +138,14 @@ def main(argv):
             )
             return loss, aux_values
 
+        if FLAGS.remat:
+            loss_fn = jax.checkpoint(
+                loss_fn, policy=jax.checkpoint_policies.checkpoint_dots
+            )
+
         (_, aux_values), grads = jax.value_and_grad(
             loss_fn, has_aux=True
-        )(train_state.params)
+        )(train_state.params, rng_generator(), batch)
         grads = jax.lax.pmean(grads, axis_name='dp')
 
         aux_values['learning_rate'] = learning_rate_schedule(train_state.step)

@@ -29,7 +29,6 @@ def apply_rotary_emb(xq, xk, max_pos, theta=10000.0):
     xq_out = jnp.stack((jnp.real(xq_out), jnp.imag(xq_out)), axis=-1).reshape(*xq_out.shape[:-1], -1)
     xk_out = xk_ * freqs_cis
     xk_out = jnp.stack((jnp.real(xk_out), jnp.imag(xk_out)), axis=-1).reshape(*xk_out.shape[:-1], -1)
-
     return xq_out.astype(jnp.float32), xk_out.astype(jnp.float32)
 
 
@@ -37,13 +36,21 @@ class MLP(nn.Module):
     output_dim: int
     hidden_dim: int = 512
     num_layers: int = 2
+    activation: str = 'gelu'
 
     @nn.compact
     def __call__(self, input_tensor):
+        activation_fn = {
+            'gelu': jax.nn.gelu,
+            'relu': jax.nn.relu,
+            'silu': jax.nn.silu,
+            'tanh': jnp.tanh,
+            'elu': jax.nn.elu,
+        }[self.activation]
         x = input_tensor
         for _ in range(self.num_layers):
             x = nn.Dense(self.hidden_dim)(x)
-            x = jax.nn.gelu(x)
+            x = activation_fn(x)
         return nn.Dense(self.output_dim)(x)
 
 
@@ -77,7 +84,7 @@ class TransformerBlock(nn.Module):
     num_heads: int
     mlp_dim: int
     dropout: float = 0.1
-    position_embedding: bool = False
+    use_position_embedding: bool = True
     max_position_embeddings: int = 4096
 
     @nn.compact
@@ -92,7 +99,7 @@ class TransformerBlock(nn.Module):
         xq = einops.rearrange(xq, '... (h d) -> ... h d', h=self.num_heads)
         xv = einops.rearrange(xv, '... (h d) -> ... h d', h=self.num_heads)
 
-        if self.position_embedding:
+        if self.use_position_embedding:
             xq, xk = apply_rotary_emb(xq, xk, max_pos=self.max_position_embeddings)
 
         attention_weights = einops.einsum(xq, xk, '... q h d, ... k h d -> ... h q k')
@@ -129,11 +136,12 @@ class Backbone(nn.Module):
     def get_default_config(updates=None):
         config = mlxu.config_dict()
         config.embedding_dim = 1024
+        config.mlp_dim_ratio = 4
         config.transformer_blocks = 5
         config.n_heads = 8
         config.dropout = 0.1
         config.input_encoder = 'cnn'
-        config.position_embedding = False
+        config.use_position_embedding = False
         config.max_position_embeddings = 4096
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
@@ -163,9 +171,9 @@ class Backbone(nn.Module):
             x = TransformerBlock(
                 embedding_dim=self.config.embedding_dim,
                 num_heads=self.config.n_heads,
-                mlp_dim=4 * self.config.embedding_dim,
+                mlp_dim=self.config.mlp_dim_ratio * self.config.embedding_dim,
                 dropout=self.config.dropout,
-                position_embedding=self.config.position_embedding,
+                use_position_embedding=self.config.use_position_embedding,
                 max_position_embeddings=self.config.max_position_embeddings,
             )(x, deterministic=deterministic)
 
@@ -181,6 +189,7 @@ class PretrainNetwork(nn.Module):
         config = mlxu.config_dict()
         config.output_head_num_layers = 2
         config.output_head_hidden_dim = 512
+        config.output_head_activation = 'gelu'
         config.backbone = Backbone.get_default_config()
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
@@ -193,17 +202,20 @@ class PretrainNetwork(nn.Module):
         self.k562_head = MLP(
             output_dim=20,
             hidden_dim=self.config.output_head_hidden_dim,
-            num_layers=self.config.output_head_num_layers
+            num_layers=self.config.output_head_num_layers,
+            activation=self.config.output_head_activation,
         )
         self.hepg2_head = MLP(
             output_dim=20,
             hidden_dim=self.config.output_head_hidden_dim,
-            num_layers=self.config.output_head_num_layers
+            num_layers=self.config.output_head_num_layers,
+            activation=self.config.output_head_activation,
         )
         self.mpra_head = MLP(
             output_dim=12,
             hidden_dim=self.config.output_head_hidden_dim,
-            num_layers=self.config.output_head_num_layers
+            num_layers=self.config.output_head_num_layers,
+            activation=self.config.output_head_activation,
         )
 
     @nn.compact
@@ -235,6 +247,7 @@ class FinetuneNetwork(nn.Module):
         config = mlxu.config_dict()
         config.output_head_num_layers = 2
         config.output_head_hidden_dim = 512
+        config.output_head_activation = 'gelu'
         config.backbone = Backbone.get_default_config()
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
@@ -247,17 +260,20 @@ class FinetuneNetwork(nn.Module):
         self.thp1_head = MLP(
             output_dim=1,
             hidden_dim=self.config.output_head_hidden_dim,
-            num_layers=self.config.output_head_num_layers
+            num_layers=self.config.output_head_num_layers,
+            activation=self.config.output_head_activation,
         )
         self.jurkat_head = MLP(
             output_dim=1,
             hidden_dim=self.config.output_head_hidden_dim,
-            num_layers=self.config.output_head_num_layers
+            num_layers=self.config.output_head_num_layers,
+            activation=self.config.output_head_activation,
         )
         self.k562_head = MLP(
             output_dim=1,
             hidden_dim=self.config.output_head_hidden_dim,
-            num_layers=self.config.output_head_num_layers
+            num_layers=self.config.output_head_num_layers,
+            activation=self.config.output_head_activation,
         )
 
     @nn.compact
