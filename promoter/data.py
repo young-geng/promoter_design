@@ -12,6 +12,7 @@ class PretrainDataset(object):
         config.path = ''
         config.split = 'train'
         config.batch_size = 32
+        config.sequential_sample = False
 
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
@@ -26,9 +27,17 @@ class PretrainDataset(object):
     def batch_iterator(self, pmap_axis_dim=None):
         sure_size = self.data['sure_sequences'].shape[0]
         mpra_size = self.data['mpra_sequences'].shape[0]
+        max_size = max(sure_size, mpra_size)
+        index = 0
+
         while True:
-            sure_indices = np.random.choice(sure_size, self.config.batch_size)
-            mpra_indices = np.random.choice(mpra_size, self.config.batch_size)
+            if self.config.sequential_sample:
+                sure_indices = np.arange(index, index + self.config.batch_size) % sure_size
+                mpra_indices = np.arange(index, index + self.config.batch_size) % mpra_size
+                index = (index + self.config.batch_size) % max_size
+            else:
+                sure_indices = np.random.choice(sure_size, self.config.batch_size)
+                mpra_indices = np.random.choice(mpra_size, self.config.batch_size)
             batch = {
                 'sure_sequences': self.data['sure_sequences'][sure_indices].astype(np.int32),
                 'sure_k562_labels': self.data['sure_k562_labels'][sure_indices].astype(np.int32),
@@ -49,6 +58,7 @@ class FinetuneDataset(object):
         config.path = ''
         config.split = 'train'
         config.batch_size = 32
+        config.sequential_sample = False
 
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
@@ -60,11 +70,15 @@ class FinetuneDataset(object):
         assert self.config.path != ''
         self.data = mlxu.load_pickle(self.config.path)[self.config.split]
 
-
     def batch_iterator(self, pmap_axis_dim=None):
         size = self.data['sequences'].shape[0]
+        index = 0
         while True:
-            indices = np.random.choice(size, self.config.batch_size)
+            if self.config.sequential_sample:
+                indices = np.arange(index, index + self.config.batch_size) % size
+                index = (index + self.config.batch_size) % size
+            else:
+                indices = np.random.choice(size, self.config.batch_size)
             batch = {
                 'sequences': self.data['sequences'][indices].astype(np.int32),
                 'thp1_output': self.data['thp1_output'][indices].astype(np.int32),
