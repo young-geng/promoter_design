@@ -15,7 +15,9 @@ import mlxu.jax_utils as jax_utils
 
 from .data import FinetuneDataset
 from .model import FinetuneNetwork
-from .utils import average_metrics, global_norm, get_weight_decay_mask
+from .utils import (
+    average_metrics, global_norm, get_weight_decay_mask, compute_corr_metrics
+)
 
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
@@ -38,6 +40,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     finetune_network=FinetuneNetwork.get_default_config(),
     train_data=FinetuneDataset.get_default_config(),
     eval_data=FinetuneDataset.get_default_config(),
+    test_data=FinetuneDataset.get_default_config(),
     logger=mlxu.WandBLogger.get_default_config(),
 )
 
@@ -96,8 +99,29 @@ def main(argv):
         thp1_loss = jnp.mean(jnp.square(thp1_output - batch['thp1_output']))
         jurkat_loss = jnp.mean(jnp.square(jurkat_output - batch['jurkat_output']))
         k562_loss = jnp.mean(jnp.square(k562_output - batch['k562_output']))
+
+        thp1_corr, thp1_rank_corr, thp1_r2 = compute_corr_metrics(
+            jax.lax.all_gather(thp1_output, axis_name='dp').reshape(-1),
+            jax.lax.all_gather(batch['thp1_output'], axis_name='dp').reshape(-1),
+        )
+        jurkat_corr, jurkat_rank_corr, jurkat_r2 = compute_corr_metrics(
+            jax.lax.all_gather(jurkat_output, axis_name='dp').reshape(-1),
+            jax.lax.all_gather(batch['jurkat_output'], axis_name='dp').reshape(-1),
+        )
+        k562_corr, k562_rank_corr, k562_r2 = compute_corr_metrics(
+            jax.lax.all_gather(k562_output, axis_name='dp').reshape(-1),
+            jax.lax.all_gather(batch['k562_output'], axis_name='dp').reshape(-1),
+        )
+
         loss = thp1_loss + jurkat_loss + k562_loss
         return loss, locals()
+
+    metric_keys = [
+        'thp1_loss', 'jurkat_loss', 'k562_loss', 'loss',
+        'thp1_corr', 'thp1_rank_corr', 'thp1_r2',
+        'jurkat_corr', 'jurkat_rank_corr', 'jurkat_r2',
+        'k562_corr', 'k562_rank_corr', 'k562_r2',
+    ]
 
     @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
     def train_step(train_state, rng, batch):
@@ -132,8 +156,7 @@ def main(argv):
 
         metrics = jax_utils.collect_metrics(
             aux_values,
-            ['thp1_loss', 'jurkat_loss', 'k562_loss', 'loss',
-             'learning_rate', 'grad_norm', 'param_norm'],
+            metric_keys + ['learning_rate', 'grad_norm', 'param_norm'],
             prefix='train',
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
@@ -156,9 +179,7 @@ def main(argv):
         )
 
         metrics = jax_utils.collect_metrics(
-            aux_values,
-            ['thp1_loss', 'jurkat_loss', 'k562_loss', 'loss'],
-            prefix='eval',
+            aux_values, metric_keys, prefix='eval',
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
         return metrics, rng_generator()

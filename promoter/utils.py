@@ -37,3 +37,15 @@ def global_norm(tree):
     squared = jax.tree_util.tree_map(lambda x: jnp.sum(jnp.square(x)), tree)
     flattened, _ = jax.flatten_util.ravel_pytree(squared)
     return jnp.sqrt(jnp.sum(flattened))
+
+
+def compute_corr_metrics(predicted, target):
+    corr = jnp.corrcoef(predicted, target)[0, 1]
+    rank_corr = jnp.corrcoef(
+        jnp.argsort(predicted), jnp.argsort(target)
+    )[0, 1]
+    r2 = (
+        1.0 - jnp.sum(jnp.square(target - predicted))
+        / jnp.sum(jnp.square(target - jnp.mean(target)))
+    )
+    return corr, rank_corr, r2
