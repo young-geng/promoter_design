@@ -69,25 +69,28 @@ class FinetuneDataset(object):
         self.config = self.get_default_config(config)
         assert self.config.path != ''
         self.data = mlxu.load_pickle(self.config.path)[self.config.split]
+        self.size = self.data['sequences'].shape[0]
 
     def batch_iterator(self, pmap_axis_dim=None):
         size = self.data['sequences'].shape[0]
         index = 0
-        while True:
+        while (self.config.sequential_sample and index < size) or (not self.config.sequential_sample):
             if self.config.sequential_sample:
-                indices = np.arange(index, index + self.config.batch_size) % size
-                index = (index + self.config.batch_size) % size
+                indices = np.arange(index, min(index + self.config.batch_size, size))
+                index = index + self.config.batch_size
             else:
                 indices = np.random.choice(size, self.config.batch_size)
             batch = {
                 'sequences': self.data['sequences'][indices].astype(np.int32),
-                'thp1_output': self.data['thp1_output'][indices].astype(np.int32),
-                'jurkat_output': self.data['jurkat_output'][indices].astype(np.int32),
-                'k562_output': self.data['k562_output'][indices].astype(np.int32),
+                'thp1_output': self.data['thp1_output'][indices].astype(np.float32),
+                'jurkat_output': self.data['jurkat_output'][indices].astype(np.float32),
+                'k562_output': self.data['k562_output'][indices].astype(np.float32),
             }
             if pmap_axis_dim is not None:
                 batch = reshape_batch_for_pmap(batch, pmap_axis_dim)
             yield batch
+        if self.config.sequential_sample:
+            yield None
 
 
 def reshape_batch_for_pmap(batch, pmap_axis_dim):
