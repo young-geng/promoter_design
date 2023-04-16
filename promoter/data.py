@@ -70,6 +70,9 @@ class FinetuneDataset(object):
         assert self.config.path != ''
         self.data = mlxu.load_pickle(self.config.path)[self.config.split]
 
+    def __len__(self):
+        return self.data['sequences'].shape[0]
+
     def batch_iterator(self, pmap_axis_dim=None):
         size = self.data['sequences'].shape[0]
         index = 0
@@ -81,9 +84,9 @@ class FinetuneDataset(object):
                 indices = np.random.choice(size, self.config.batch_size)
             batch = {
                 'sequences': self.data['sequences'][indices].astype(np.int32),
-                'thp1_output': self.data['thp1_output'][indices].astype(np.int32),
-                'jurkat_output': self.data['jurkat_output'][indices].astype(np.int32),
-                'k562_output': self.data['k562_output'][indices].astype(np.int32),
+                'thp1_output': self.data['thp1_output'][indices].astype(np.float32),
+                'jurkat_output': self.data['jurkat_output'][indices].astype(np.float32),
+                'k562_output': self.data['k562_output'][indices].astype(np.float32),
             }
             if pmap_axis_dim is not None:
                 batch = reshape_batch_for_pmap(batch, pmap_axis_dim)
