@@ -5,6 +5,7 @@ from sklearn.metrics import r2_score
 import mlxu
 from tqdm import tqdm, trange
 from pprint import pprint, pformat
+import os
 
 import jax
 import jax.numpy as jnp
@@ -17,14 +18,14 @@ import mlxu.jax_utils as jax_utils
 
 import pdb
 
-from .data import FinetuneDataset
-from .model import FinetuneNetwork
-from .utils import average_metrics, global_norm, get_weight_decay_mask
+from data import FinetuneDataset
+from model import FinetuneNetwork
+from utils import average_metrics, global_norm, get_weight_decay_mask
 
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=42,
-    total_steps=100000,
+    total_steps=3000,
     log_freq=20,
     eval_freq=125,
     save_model=False,
@@ -37,12 +38,13 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     hepg2_loss_weight=1.0,
     mpra_loss_weight=1.0,
     clip_gradient=10.0,
-    load_pretrained='',
+    load_pretrained='./data/pretrained_1.pkl',
     finetune_network=FinetuneNetwork.get_default_config({"use_position_embedding": False}),
     train_data=FinetuneDataset.get_default_config({"split": "train", "path": "./data/finetune_data.pkl", "batch_size": 96}),
     val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
     test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
-    logger=mlxu.WandBLogger.get_default_config({"output_dir": "./logs", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True}),
+    logger=mlxu.WandBLogger.get_default_config({"output_dir": "./saved_models", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True, \
+                                                "experiment_id": "finetune_vanilla"}),
 )
 
 
@@ -270,6 +272,104 @@ def main(argv):
             eval_metrics['step'] = step
             logger.log(eval_metrics)
             tqdm.write(pformat(eval_metrics))
+    
+    # load best params
+    if FLAGS.save_model:
+        train_state = train_state.replace(
+            params=mlxu.utils.load_pickle(os.path.join(logger.output_dir, 'best_params.pkl'))
+        )
+        train_state = replicate(train_state)
+
+    # best val metrics
+    val_iterator = val_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+    batch = next(val_iterator)
+    all_y = {'THP1': [], 'Jurkat': [], 'K562': []}
+    all_yhat = {'THP1': [], 'Jurkat': [], 'K562': []}
+    while batch is not None:
+        metrics, \
+            thp1_y, jurkat_y, k562_y, \
+                thp1_output, jurkat_output, k562_output, rng = eval_step(
+            train_state, rng, batch
+        )
+        all_y['THP1'].append(jax.device_get(thp1_y))
+        all_y['Jurkat'].append(jax.device_get(jurkat_y))
+        all_y['K562'].append(jax.device_get(k562_y))
+
+        all_yhat['THP1'].append(jax.device_get(thp1_output))
+        all_yhat['Jurkat'].append(jax.device_get(jurkat_output))
+        all_yhat['K562'].append(jax.device_get(k562_output))
+
+        batch = next(val_iterator)
+    
+    all_y = {k: np.hstack(v).reshape(-1) for k, v in all_y.items()}
+    all_yhat = {k: np.hstack(v).reshape(-1) for k, v in all_yhat.items()}
+    print("y shape: {}".format(all_y["THP1"].shape))
+    print("yhat shape: {}".format(all_yhat["THP1"].shape))
+
+    val_metrics = {}
+    for k in all_y:
+        # Compute Pearson correlation
+        val_metrics[f'val/{k}_PearsonR'] = stats.pearsonr(
+            all_y[k], all_yhat[k]
+        )[0]
+        # Compute Spearman correlation
+        val_metrics[f'val/{k}_SpearmanR'] = stats.spearmanr(
+            all_y[k], all_yhat[k]
+        )[0]
+        # Compute R2
+        val_metrics[f'val/{k}_R2'] = r2_score(
+            all_y[k], all_yhat[k]
+        )
+    
+    # print best val metrics
+    print('Best val metrics:')
+    print(pformat(val_metrics))
+
+    # test metrics
+    test_iterator = test_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+    batch = next(test_iterator)
+    all_y = {'THP1': [], 'Jurkat': [], 'K562': []}
+    all_yhat = {'THP1': [], 'Jurkat': [], 'K562': []}
+    while batch is not None:
+        metrics, \
+            thp1_y, jurkat_y, k562_y, \
+                thp1_output, jurkat_output, k562_output, rng = eval_step(
+            train_state, rng, batch
+        )
+        all_y['THP1'].append(jax.device_get(thp1_y))
+        all_y['Jurkat'].append(jax.device_get(jurkat_y))
+        all_y['K562'].append(jax.device_get(k562_y))
+
+        all_yhat['THP1'].append(jax.device_get(thp1_output))
+        all_yhat['Jurkat'].append(jax.device_get(jurkat_output))
+        all_yhat['K562'].append(jax.device_get(k562_output))
+
+        batch = next(test_iterator)
+
+    all_y = {k: np.hstack(v).reshape(-1) for k, v in all_y.items()}
+    all_yhat = {k: np.hstack(v).reshape(-1) for k, v in all_yhat.items()}
+    print("y shape: {}".format(all_y["THP1"].shape))
+    print("yhat shape: {}".format(all_yhat["THP1"].shape))
+    
+    test_metrics = {}
+    for k in all_y:
+        # Compute Pearson correlation
+        test_metrics[f'test/{k}_PearsonR'] = stats.pearsonr(
+            all_y[k], all_yhat[k]
+        )[0]
+        # Compute Spearman correlation
+        test_metrics[f'test/{k}_SpearmanR'] = stats.spearmanr(
+            all_y[k], all_yhat[k]
+        )[0]
+        # Compute R2
+        test_metrics[f'test/{k}_R2'] = r2_score(
+            all_y[k], all_yhat[k]
+        )
+
+    # print test metrics
+    logger.log(test_metrics)
+    print('Test metrics:')
+    print(pformat(test_metrics))
 
 
 if __name__ == '__main__':
