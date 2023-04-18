@@ -320,7 +320,7 @@ def main(argv):
         thp1_output, jurkat_output, k562_output = model.apply(
             train_state.params,
             inputs=jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32)[:, :, :4],
-            deterministic=False,
+            deterministic=True,
             rngs=rng_generator(model.rng_keys()),
         )
         loss, aux_values = compute_loss(
