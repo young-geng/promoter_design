@@ -36,13 +36,16 @@ class SequenceOptimizer(object):
         self.config = self.get_default_config(config)
 
     def gradient_descent_round(self, func, seq, rng, **kwargs):
+        if self.config.gd_steps == 0:
+            return seq
+
         optimizer = optax.adam(self.config.gd_step_size)
         seq = seq * self.config.gd_presoftmax_scale
         opt_state = optimizer.init(seq)
 
         @jax.grad
         def grad_fn(x, rng, **kwargs):
-            return jnp.sum(func(jax.nn.softmax(x, axis=-1), rng, **kwargs))
+            return -jnp.sum(func(jax.nn.softmax(x, axis=-1), rng, **kwargs))
 
         def loop_body(i, state):
             seq, opt_state, rng = state
@@ -64,6 +67,9 @@ class SequenceOptimizer(object):
         return seq
 
     def random_mutation_round(self, func, seq, rng, **kwargs):
+        if self.config.mutation_steps == 0:
+            return seq
+
         def loop_body(i, state):
             seq, rng = state
             rng_generator = jax_utils.JaxRNG(rng)

@@ -26,16 +26,14 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     total_steps=100000,
     log_freq=20,
     eval_freq=1000,
-    eval_steps=30,
+    val_steps=0,
+    test_steps=0,
     save_model=False,
     remat=True,
     accumulate_gradient_steps=1,
     lr=1e-4,
     lr_warmup_steps=1000,
     weight_decay=1e-3,
-    k562_loss_weight=1.0,
-    hepg2_loss_weight=1.0,
-    mpra_loss_weight=1.0,
     use_coms_loss=False,
     coms_loss_weight=0.0,
     clip_gradient=10.0,
@@ -43,7 +41,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     sequence_optimizer=SequenceOptimizer.get_default_config(),
     finetune_network=FinetuneNetwork.get_default_config(),
     train_data=FinetuneDataset.get_default_config(),
-    eval_data=FinetuneDataset.get_default_config(),
+    val_data=FinetuneDataset.get_default_config(),
     test_data=FinetuneDataset.get_default_config(),
     logger=mlxu.WandBLogger.get_default_config(),
 )
@@ -58,7 +56,12 @@ def main(argv):
     jax_device_count = jax.device_count()
 
     train_dataset = FinetuneDataset(FLAGS.train_data)
-    eval_dataset = FinetuneDataset(FLAGS.eval_data)
+
+    if FLAGS.val_steps > 0:
+        val_dataset = FinetuneDataset(FLAGS.val_data)
+
+    if FLAGS.test_steps > 0:
+        test_dataset = FinetuneDataset(FLAGS.test_data)
 
     model = FinetuneNetwork(FLAGS.finetune_network)
     params = model.init(
@@ -313,8 +316,8 @@ def main(argv):
         train_state = train_state.apply_gradients(grads=grads)
         return train_state, rng_generator(), metrics
 
-    @partial(jax.pmap, axis_name='dp', donate_argnums=1)
-    def eval_step(train_state, rng, batch):
+    @partial(jax.pmap, axis_name='dp', donate_argnums=1, static_broadcasted_argnums=(3,))
+    def eval_step(train_state, rng, batch, prefix='val'):
         rng_generator = jax_utils.JaxRNG(rng)
 
         thp1_output, jurkat_output, k562_output = model.apply(
@@ -335,20 +338,26 @@ def main(argv):
 
         aux_values['loss'] = loss
         metrics = jax_utils.collect_metrics(
-            aux_values, metric_keys, prefix='eval',
+            aux_values, metric_keys, prefix=prefix,
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
         return metrics, rng_generator()
 
     train_iterator = train_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
-    eval_iterator = eval_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+
+    if FLAGS.val_steps > 0:
+        val_iterator = val_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+
+    if FLAGS.test_steps > 0:
+        test_iterator = test_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+
     rng = jax.device_put_sharded(
         list(jax_utils.next_rng(jax.device_count())),
         jax.devices(),
     )
     train_state = replicate(train_state)
 
-    best_eval_loss = np.inf
+    best_val_loss = np.inf
 
     for step in trange(FLAGS.total_steps, ncols=0):
         train_state, rng, train_metrics = train_step(
@@ -361,26 +370,39 @@ def main(argv):
             tqdm.write(pformat(train_metrics))
 
         if step % FLAGS.eval_freq == 0:
-            eval_metrics = []
-            for _ in range(FLAGS.eval_steps):
-                metrics, rng = eval_step(
-                    train_state, rng, next(eval_iterator)
-                )
-                eval_metrics.append(unreplicate(metrics))
-            eval_metrics = average_metrics(jax.device_get(eval_metrics))
-
-            if eval_metrics['eval/loss'] < best_eval_loss:
-                best_eval_loss = eval_metrics['eval/loss']
-                if FLAGS.save_model:
-                    logger.save_pickle(
-                        jax.device_get(unreplicate(train_state).params),
-                        'best_params.pkl',
+            if FLAGS.val_steps > 0:
+                eval_metrics = []
+                for _ in range(FLAGS.val_steps):
+                    metrics, rng = eval_step(
+                        train_state, rng, next(val_iterator), 'val'
                     )
+                    eval_metrics.append(unreplicate(metrics))
+                eval_metrics = average_metrics(jax.device_get(eval_metrics))
 
-            eval_metrics['eval/best_loss'] = best_eval_loss
-            eval_metrics['step'] = step
-            logger.log(eval_metrics)
-            tqdm.write(pformat(eval_metrics))
+                if eval_metrics['val/loss'] < best_val_loss:
+                    best_val_loss = eval_metrics['val/loss']
+                    if FLAGS.save_model:
+                        logger.save_pickle(
+                            jax.device_get(unreplicate(train_state).params),
+                            'best_params.pkl',
+                        )
+
+                eval_metrics['val/best_loss'] = best_val_loss
+                eval_metrics['step'] = step
+                logger.log(eval_metrics)
+                tqdm.write(pformat(eval_metrics))
+
+            if FLAGS.test_steps > 0:
+                eval_metrics = []
+                for _ in range(FLAGS.test_steps):
+                    metrics, rng = eval_step(
+                        train_state, rng, next(test_iterator), 'test'
+                    )
+                    eval_metrics.append(unreplicate(metrics))
+                eval_metrics = average_metrics(jax.device_get(eval_metrics))
+                eval_metrics['step'] = step
+                logger.log(eval_metrics)
+                tqdm.write(pformat(eval_metrics))
 
 
 if __name__ == '__main__':
