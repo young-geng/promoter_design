@@ -42,7 +42,8 @@ def global_norm(tree):
 def compute_corr_metrics(predicted, target):
     corr = jnp.corrcoef(predicted, target)[0, 1]
     rank_corr = jnp.corrcoef(
-        jnp.argsort(predicted), jnp.argsort(target)
+        jnp.argsort(jnp.argsort(predicted)),
+        jnp.argsort(jnp.argsort(target)),
     )[0, 1]
     r2 = (
         1.0 - jnp.sum(jnp.square(target - predicted))
