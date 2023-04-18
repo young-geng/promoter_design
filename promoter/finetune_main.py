@@ -15,6 +15,7 @@ import mlxu.jax_utils as jax_utils
 
 from .data import FinetuneDataset
 from .model import FinetuneNetwork
+from .seq_opt import SequenceOptimizer
 from .utils import (
     average_metrics, global_norm, get_weight_decay_mask, compute_corr_metrics
 )
@@ -35,8 +36,11 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     k562_loss_weight=1.0,
     hepg2_loss_weight=1.0,
     mpra_loss_weight=1.0,
+    use_coms_loss=False,
+    coms_loss_weight=0.0,
     clip_gradient=10.0,
     load_pretrained='',
+    sequence_optimizer=SequenceOptimizer.get_default_config(),
     finetune_network=FinetuneNetwork.get_default_config(),
     train_data=FinetuneDataset.get_default_config(),
     eval_data=FinetuneDataset.get_default_config(),
@@ -95,6 +99,8 @@ def main(argv):
         apply_fn=None
     )
 
+    sequence_optimizer = SequenceOptimizer(FLAGS.sequence_optimizer)
+
     def compute_loss(batch, thp1_output, jurkat_output, k562_output):
         thp1_loss = jnp.mean(jnp.square(thp1_output - batch['thp1_output']))
         jurkat_loss = jnp.mean(jnp.square(jurkat_output - batch['jurkat_output']))
@@ -113,14 +119,151 @@ def main(argv):
             jax.lax.all_gather(batch['k562_output'], axis_name='dp').reshape(-1),
         )
 
-        loss = thp1_loss + jurkat_loss + k562_loss
-        return loss, locals()
+        supervised_loss = thp1_loss + jurkat_loss + k562_loss
+
+        aux_values = dict(
+            thp1_loss=thp1_loss,
+            jurkat_loss=jurkat_loss,
+            k562_loss=k562_loss,
+            thp1_corr=thp1_corr,
+            thp1_rank_corr=thp1_rank_corr,
+            thp1_r2=thp1_r2,
+            jurkat_corr=jurkat_corr,
+            jurkat_rank_corr=jurkat_rank_corr,
+            jurkat_r2=jurkat_r2,
+            k562_corr=k562_corr,
+            k562_rank_corr=k562_rank_corr,
+            k562_r2=k562_r2,
+            supervised_loss=supervised_loss,
+        )
+
+        return supervised_loss, aux_values
+
+    def compute_coms_loss(params, rng, batch):
+        rng_generator = jax_utils.JaxRNG(rng)
+        starting_seq = jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32)[:, :, :4]
+
+        def objectve_funtion(seq, rng, params, target='thp1', reduce_mean=False):
+            rng_generator = jax_utils.JaxRNG(rng)
+            thp1_output, jurkat_output, k562_output = model.apply(
+                params,
+                inputs=seq,
+                deterministic=False,
+                rngs=rng_generator(model.rng_keys()),
+            )
+            thp1_diff = thp1_output - 0.5 * jurkat_output - 0.5 * k562_output
+            jurkat_diff = jurkat_output - 0.5 * thp1_output - 0.5 * k562_output
+            k562_diff = k562_output - 0.5 * thp1_output - 0.5 * jurkat_output
+
+            if reduce_mean:
+                reduce_fn = jnp.mean
+            else:
+                reduce_fn = lambda x: x
+
+            if target == 'thp1':
+                return reduce_fn(thp1_diff)
+            elif target == 'jurkat':
+                return reduce_fn(jurkat_diff)
+            elif target == 'k562':
+                return reduce_fn(k562_diff)
+            elif target == 'all':
+                return reduce_fn(thp1_diff), reduce_fn(jurkat_diff), reduce_fn(k562_diff)
+            else:
+                raise ValueError(f'Unknown target {target}')
+
+        ds_thp1_diff, ds_jurkat_diff, ds_k562_diff = objectve_funtion(
+            starting_seq, rng_generator(),
+            params=params, target='all', reduce_mean=True
+        )
+
+        thp1_optimized_seq = sequence_optimizer(
+            objectve_funtion,
+            starting_seq,
+            rng_generator(),
+            params=params,
+            target='thp1',
+            reduce_mean=False
+        )
+
+        thp1_n_mutations = jnp.sum(
+            jnp.argmax(thp1_optimized_seq, axis=-1) != jnp.argmax(starting_seq, axis=-1),
+            axis=-1,
+        ).astype(jnp.float32).mean()
+        opt_thp1_diff = objectve_funtion(
+            thp1_optimized_seq, rng_generator(),
+            params=params, target='thp1', reduce_mean=True
+        )
+
+        jurkat_optimized_seq = sequence_optimizer(
+            objectve_funtion,
+            starting_seq,
+            rng_generator(),
+            params=params,
+            target='jurkat',
+            reduce_mean=False
+        )
+
+        jurkat_n_mutations = jnp.sum(
+            jnp.argmax(jurkat_optimized_seq, axis=-1) != jnp.argmax(starting_seq, axis=-1),
+            axis=-1,
+        ).astype(jnp.float32).mean()
+        opt_jurkat_diff = objectve_funtion(
+            jurkat_optimized_seq, rng_generator(),
+            params=params, target='jurkat', reduce_mean=True
+        )
+
+        k562_optimized_seq = sequence_optimizer(
+            objectve_funtion,
+            starting_seq,
+            rng_generator(),
+            params=params,
+            target='k562',
+            reduce_mean=False
+        )
+
+        k562_n_mutations = jnp.sum(
+            jnp.argmax(k562_optimized_seq, axis=-1) != jnp.argmax(starting_seq, axis=-1),
+            axis=-1,
+        ).astype(jnp.float32).mean()
+        opt_k562_diff = objectve_funtion(
+            k562_optimized_seq, rng_generator(),
+            params=params, target='k562', reduce_mean=True
+        )
+
+        thp1_gap = opt_thp1_diff - ds_thp1_diff
+        jurkat_gap = opt_jurkat_diff - ds_jurkat_diff
+        k562_gap = opt_k562_diff - ds_k562_diff
+
+        coms_loss = FLAGS.coms_loss_weight * (thp1_gap + jurkat_gap + k562_gap)
+
+        aux_values = dict(
+            ds_thp1_diff=ds_thp1_diff,
+            ds_jurkat_diff=ds_jurkat_diff,
+            ds_k562_diff=ds_k562_diff,
+            opt_thp1_diff=opt_thp1_diff,
+            opt_jurkat_diff=opt_jurkat_diff,
+            opt_k562_diff=opt_k562_diff,
+            thp1_gap=thp1_gap,
+            jurkat_gap=jurkat_gap,
+            k562_gap=k562_gap,
+            thp1_n_mutations=thp1_n_mutations,
+            jurkat_n_mutations=jurkat_n_mutations,
+            k562_n_mutations=k562_n_mutations,
+            coms_loss=coms_loss,
+        )
+
+        return coms_loss, aux_values
 
     metric_keys = [
-        'thp1_loss', 'jurkat_loss', 'k562_loss', 'loss',
+        'thp1_loss', 'jurkat_loss', 'k562_loss', 'supervised_loss',
         'thp1_corr', 'thp1_rank_corr', 'thp1_r2',
         'jurkat_corr', 'jurkat_rank_corr', 'jurkat_r2',
         'k562_corr', 'k562_rank_corr', 'k562_r2',
+        'ds_thp1_diff', 'ds_jurkat_diff', 'ds_k562_diff',
+        'opt_thp1_diff', 'opt_jurkat_diff', 'opt_k562_diff',
+        'thp1_gap', 'jurkat_gap', 'k562_gap',
+        'thp1_n_mutations', 'jurkat_n_mutations', 'k562_n_mutations',
+        'coms_loss', 'loss'
     ]
 
     @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
@@ -138,6 +281,12 @@ def main(argv):
             loss, aux_values = compute_loss(
                 batch, thp1_output, jurkat_output, k562_output
             )
+            if FLAGS.use_coms_loss:
+                coms_loss, coms_aux_values = compute_coms_loss(params, rng_generator(), batch)
+                loss += coms_loss
+                aux_values.update(coms_aux_values)
+
+            aux_values['loss'] = loss
             return loss, aux_values
 
         if FLAGS.remat:
@@ -177,7 +326,14 @@ def main(argv):
         loss, aux_values = compute_loss(
             batch, thp1_output, jurkat_output, k562_output
         )
+        if FLAGS.use_coms_loss:
+            coms_loss, coms_aux_values = compute_coms_loss(
+                train_state.params, rng_generator(), batch
+            )
+            loss += coms_loss
+            aux_values.update(coms_aux_values)
 
+        aux_values['loss'] = loss
         metrics = jax_utils.collect_metrics(
             aux_values, metric_keys, prefix='eval',
         )
