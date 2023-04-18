@@ -39,7 +39,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     mpra_loss_weight=1.0,
     clip_gradient=10.0,
     load_pretrained='./data/pretrained_1.pkl',
-    finetune_network=FinetuneNetwork.get_default_config({"use_position_embedding": False}),
+    finetune_network=FinetuneNetwork.get_default_config(),
     train_data=FinetuneDataset.get_default_config({"split": "train", "path": "./data/finetune_data.pkl", "batch_size": 96}),
     val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
     test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
@@ -155,7 +155,7 @@ def main(argv):
         thp1_output, jurkat_output, k562_output = model.apply(
             train_state.params,
             inputs=jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32)[:, :, :4],
-            deterministic=False,
+            deterministic=True,
             rngs=rng_generator(model.rng_keys()),
         )
         loss, aux_values = compute_loss(
@@ -275,6 +275,7 @@ def main(argv):
     
     # load best params
     if FLAGS.save_model:
+        print("Loading best params...")
         train_state = train_state.replace(
             params=mlxu.utils.load_pickle(os.path.join(logger.output_dir, 'best_params.pkl'))
         )

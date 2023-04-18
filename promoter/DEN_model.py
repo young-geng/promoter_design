@@ -1,4 +1,5 @@
 import numpy as np
+import pdb
 import mlxu
 
 import jax
@@ -7,6 +8,9 @@ import flax
 from flax import linen as nn
 import einops
 import mlxu.jax_utils as jax_utils
+
+from model import FinetuneNetwork
+from DEN_loss import DEN_loss
 
 class ConvBlock(nn.Module):
     channels: int
@@ -34,11 +38,28 @@ class ConvBlock(nn.Module):
 
 # UNet architecture for sequence generation
 class UNet(nn.Module):
-    seq_length: int
-    alphabet_size: int
-    latent_size: int
-    num_classes: int
-    num_samples: int
+    config_updates: ... = None
+
+    @staticmethod
+    @nn.nowrap
+    def get_default_config(updates=None):
+        config = mlxu.config_dict()
+        config.seq_length = 250
+        config.alphabet_size = 4
+        config.latent_size = 100
+        config.num_classes = 3
+        config.num_samples = 10
+        if updates is not None:
+            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
+        return config
+
+    def setup(self):
+        self.config = self.get_default_config(self.config_updates)
+        self.seq_length = self.config.seq_length
+        self.alphabet_size = self.config.alphabet_size
+        self.latent_size = self.config.latent_size
+        self.num_classes = self.config.num_classes
+        self.num_samples = self.config.num_samples
 
     @nn.compact
     def __call__(self, inputs, deterministic=False, temperature=1.0):
@@ -47,8 +68,8 @@ class UNet(nn.Module):
         seq_length_rounded_to_power_of_2 = int(2 ** np.ceil(np.log2(self.seq_length)))
 
         # initial dense layer
-        x = nn.Dense(features=self.latent_size + self.num_classes)(inputs)
-        x = jax.nn.gelu(x).reshape((inputs.shape[0], 1, self.latent_size + self.num_classes))
+        x = nn.Dense(features=self.alphabet_size * seq_length_rounded_to_power_of_2)(inputs)
+        x = jax.nn.gelu(x).reshape((inputs.shape[0], seq_length_rounded_to_power_of_2, self.alphabet_size))
 
         # downsize
         x1 = ConvBlock(channels=128)(x, deterministic=deterministic)
@@ -97,7 +118,7 @@ class UNet(nn.Module):
         )(x)
 
         # crop to original size
-        x = x[:, :, :self.seq_length]
+        x = x[:, :self.seq_length]
 
         # get num_samples samples using gumbel softmax + straight through estimator
         x_rep = jnp.repeat(x, self.num_samples, axis=0).reshape((inputs.shape[0], self.num_samples, self.seq_length, self.alphabet_size))
@@ -109,6 +130,72 @@ class UNet(nn.Module):
         samples = jax.lax.stop_gradient(y_hard - y_soft) + y_soft
 
         # get PWM by taking softmax of logits
-        x = jnp.nn.softmax(x, axis=-1)
+        x = jax.nn.softmax(x, axis=-1)
 
         return x, samples        
+    
+class DEN(nn.Module):
+    generator_config_updates: ... = None
+    predictor_config_updates: ... = None
+    loss_updates: ... = None
+
+    @staticmethod
+    @nn.nowrap
+    def get_default_config(generator_config_updates=None, predictor_config_updates=None, loss_updates=None):
+        config = mlxu.config_dict()
+        config.generator = UNet.get_default_config(generator_config_updates)
+        config.predictor = FinetuneNetwork.get_default_config(predictor_config_updates)
+        config.loss = DEN_loss.get_default_config(loss_updates)
+        return config
+    
+    def setup(self):
+        self.config = self.get_default_config(self.generator_config_updates, self.predictor_config_updates, self.loss_updates)
+        self.generator = UNet(self.config.generator)
+        self.predictor = FinetuneNetwork(self.config.predictor)
+        self.loss = DEN_loss(self.config.loss)
+
+    def run_on_batch(self, inputs, deterministic=False, temperature=1.0):
+        # inputs: (batch_size, latent_size)
+        
+        # generate sequence
+        x, samples = self.generator(inputs, deterministic=deterministic, temperature=temperature)
+        samples_flat = samples.reshape((samples.shape[0] * samples.shape[1], samples.shape[2], samples.shape[3]))
+
+        # predict expression
+        # using PWM
+        intermediate_pwm, pwm_predictions_thp1, pwm_predictions_jurkat, pwm_predictions_k562 = self.predictor(x, deterministic=True)
+        pwm_predictions = jnp.stack([pwm_predictions_thp1, pwm_predictions_jurkat, pwm_predictions_k562], axis=1)
+
+        # using samples
+        intermediate_samples, samples_predictions_thp1, samples_predictions_jurkat, samples_predictions_k562 = self.predictor(samples_flat, deterministic=True)
+        intermediate_samples = intermediate_samples.reshape((samples.shape[0], samples.shape[1], intermediate_samples.shape[1]))
+        samples_predictions_thp1 = samples_predictions_thp1.reshape((samples.shape[0], samples.shape[1]))
+        samples_predictions_jurkat = samples_predictions_jurkat.reshape((samples.shape[0], samples.shape[1]))
+        samples_predictions_k562 = samples_predictions_k562.reshape((samples.shape[0], samples.shape[1]))
+        samples_predictions = jnp.stack([samples_predictions_thp1, samples_predictions_jurkat, samples_predictions_k562], axis=2)
+
+        return x, samples, \
+               pwm_predictions, samples_predictions, \
+               intermediate_pwm, intermediate_samples
+
+    def __call__(self, inputs1, inputs2, deterministic=False, temperature=1.0):
+        pwm1, samples1, pwm_predictions1, samples_predictions1, intermediate_pwm1, intermediate_samples1 = self.run_on_batch(inputs1, deterministic=deterministic, temperature=temperature)
+        pwm2, samples2, pwm_predictions2, samples_predictions2, intermediate_pwm2, intermediate_samples2 = self.run_on_batch(inputs2, deterministic=deterministic, temperature=temperature)
+
+        # compute loss
+        total_loss, \
+        fitness_loss, \
+        total_diversity_loss, \
+        entropy_loss, \
+        diversity_loss, \
+        intermediate_repr_loss = self.loss(pwm1, pwm2, \
+                                           samples1, samples2, \
+                                           pwm_predictions1, pwm_predictions2, \
+                                           samples_predictions1, samples_predictions2, \
+                                           intermediate_samples1, intermediate_samples2)
+        
+        return total_loss, fitness_loss, total_diversity_loss, entropy_loss, diversity_loss, intermediate_repr_loss, samples_predictions1, samples_predictions2
+
+    @nn.nowrap
+    def rng_keys(self):
+        return ('params', 'dropout', 'gumbel')

@@ -248,6 +248,7 @@ class FinetuneNetwork(nn.Module):
         config.output_head_num_layers = 2
         config.output_head_hidden_dim = 512
         config.output_head_activation = 'gelu'
+        config.return_intermediate = False
         config.backbone = Backbone.get_default_config()
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
@@ -283,7 +284,11 @@ class FinetuneNetwork(nn.Module):
         thp1_output = self.thp1_head(x).squeeze(-1)
         jurkat_output = self.jurkat_head(x).squeeze(-1)
         k562_output = self.k562_head(x).squeeze(-1)
-        return thp1_output, jurkat_output, k562_output
+
+        if self.config.return_intermediate:
+            return x, thp1_output, jurkat_output, k562_output
+        else:
+            return thp1_output, jurkat_output, k562_output
 
     @nn.nowrap
     def rng_keys(self):
