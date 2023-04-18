@@ -6,6 +6,7 @@ import mlxu
 from tqdm import tqdm, trange
 from pprint import pprint, pformat
 import os
+import matplotlib.pyplot as plt
 
 import jax
 import jax.numpy as jnp
@@ -46,7 +47,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     oracle_val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
     oracle_test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
     logger=mlxu.WandBLogger.get_default_config({"output_dir": "./saved_models", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True, \
-                                                "experiment_id": "DENs_trial_Jurkat"}),
+                                                "experiment_id": "DENs_trial_Jurkat_1"}),
 )
 
 def reshape_batch_for_pmap(batch, pmap_axis_dim):
@@ -62,11 +63,28 @@ def batch_iterator(batch_size, latent_size, pmap_axis_dim=None):
             batch2 = reshape_batch_for_pmap(batch2, pmap_axis_dim)
         yield batch1, batch2
 
+# holds a static set of random data for evaluation
+class DENValidationDataset:
+    def __init__(self, batch_size, latent_size, num_samples=1024):
+        self.batch_size = batch_size
+        self.latent_size = latent_size
+        self.num_samples = num_samples
+        
+        np.random.seed(97)
+        self.random_data = np.random.uniform(-1, 1, (num_samples, latent_size))
+
+    def __len__(self):
+        return self.num_samples
+
+    def batch_iterator(self, pmap_axis_dim=None):
+        for i in range(0, self.num_samples, self.batch_size):
+            batch = self.random_data[i:min(i+self.batch_size, self.num_samples)]
+            if pmap_axis_dim is not None:
+                batch = reshape_batch_for_pmap(batch, pmap_axis_dim)
+            yield batch
+        yield None
+
 def main(argv):
-    logger = mlxu.WandBLogger(
-        config=FLAGS.logger,
-        variant=mlxu.get_user_flags(FLAGS, FLAGS_DEF),
-    )
     jax_utils.set_random_seed(FLAGS.seed)
     jax_device_count = jax.device_count()
 
@@ -74,8 +92,11 @@ def main(argv):
     model = DEN(FLAGS.generator_config_updates, \
                 FLAGS.predictor_config_updates, \
                 FLAGS.loss_config_updates)
+    
+    # create pure predictor
+    predictor = FinetuneNetwork(FLAGS.predictor_config_updates)
 
-    # init model
+    # init models
     params = model.init(
         inputs1=jnp.zeros((5, 100)),
         inputs2=jnp.zeros((5, 100)),
@@ -83,13 +104,27 @@ def main(argv):
         rngs=jax_utils.next_rng(model.rng_keys()),
     )
 
+    predictor_params = predictor.init(
+        inputs=jnp.zeros((1, 1000, 4)),
+        deterministic=False,
+        rngs=jax_utils.next_rng(predictor.rng_keys()),
+    )
+
     # load pretrained predictor
+    # in DEN
     params = flax.core.unfreeze(params)
     params['params']['predictor'] = jax.device_put(
         mlxu.load_pickle(FLAGS.pretrained_predictor_path)['params']
     )
     params = flax.core.freeze(params)
+    # in predictor
+    predictor_params = flax.core.unfreeze(predictor_params)
+    predictor_params['params'] = jax.device_put(
+        mlxu.load_pickle(FLAGS.pretrained_predictor_path)['params']
+    )
+    predictor_params = flax.core.freeze(predictor_params)
 
+    # create optimizer
     learning_rate_schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=FLAGS.lr,
@@ -117,11 +152,136 @@ def main(argv):
     if FLAGS.accumulate_gradient_steps > 1:
         optimizer = optax.MultiSteps(optimizer, FLAGS.accumulate_gradient_steps)
 
+    # create train state
+    # for DEN
     train_state = TrainState.create(
         params=params,
         tx=optimizer,
         apply_fn=None
     )
+    # for predictor
+    predictor_train_state = TrainState.create(
+        params=predictor_params,
+        tx=optax.set_to_zero(),
+        apply_fn=None
+    )
+    
+    # create RNGs
+    rng = jax.device_put_sharded(
+        list(jax_utils.next_rng(jax.device_count())),
+        jax.devices(),
+    )
+
+    # replicate train state across devices
+    train_state = replicate(train_state)
+    predictor_train_state = replicate(predictor_train_state)
+
+    # function to get predictions of the pretrained predictor
+    @partial(jax.pmap, axis_name='dp', donate_argnums=1)
+    def eval_predictor_step(predictor_train_state, rng, batch):
+        rng_generator = jax_utils.JaxRNG(rng)
+
+        _, thp1_output, jurkat_output, k562_output = predictor.apply(
+            predictor_train_state.params,
+            inputs=jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32)[:, :, :4],
+            deterministic=True,
+            rngs=rng_generator(predictor.rng_keys()),
+        )
+
+        return batch['thp1_output'], batch['jurkat_output'], batch['k562_output'], \
+               thp1_output, jurkat_output, k562_output, \
+               rng_generator()
+
+    # first get predictions of the pretrained predictor on the oracle data
+    oracle_test_data = FinetuneDataset(FLAGS.oracle_test_data)
+    oracle_test_iterator = oracle_test_data.batch_iterator(pmap_axis_dim=jax_device_count)
+    batch = next(oracle_test_iterator)
+    all_y = {'THP1': [], 'Jurkat': [], 'K562': []}
+    all_yhat = {'THP1': [], 'Jurkat': [], 'K562': []}
+    while batch is not None:
+        thp1_y, jurkat_y, k562_y, \
+        thp1_output, jurkat_output, k562_output, \
+        rng = eval_predictor_step(
+            predictor_train_state, rng, batch
+        )
+        all_y['THP1'].append(jax.device_get(thp1_y))
+        all_y['Jurkat'].append(jax.device_get(jurkat_y))
+        all_y['K562'].append(jax.device_get(k562_y))
+
+        all_yhat['THP1'].append(jax.device_get(thp1_output))
+        all_yhat['Jurkat'].append(jax.device_get(jurkat_output))
+        all_yhat['K562'].append(jax.device_get(k562_output))
+
+        batch = next(oracle_test_iterator)
+
+    all_y = {k: np.hstack(v).reshape(-1) for k, v in all_y.items()}
+    all_yhat = {k: np.hstack(v).reshape(-1) for k, v in all_yhat.items()}
+    print("y shape: {}".format(all_y["THP1"].shape))
+    print("yhat shape: {}".format(all_yhat["THP1"].shape))
+    
+    test_metrics = {}
+    for k in all_y:
+        # Compute Pearson correlation
+        test_metrics[f'test/{k}_PearsonR'] = stats.pearsonr(
+            all_y[k], all_yhat[k]
+        )[0]
+        # Compute Spearman correlation
+        test_metrics[f'test/{k}_SpearmanR'] = stats.spearmanr(
+            all_y[k], all_yhat[k]
+        )[0]
+        # Compute R2
+        test_metrics[f'test/{k}_R2'] = r2_score(
+            all_y[k], all_yhat[k]
+        )
+
+    # print test metrics
+    print('Oracle dataset test metrics:')
+    print(pformat(test_metrics))
+
+    # create plots of predictions vs. ground truth
+    fig, axes = plt.subplots(1, 3, figsize=(15, 7))
+    for i, k in enumerate(all_y):
+        axes[i].scatter(all_y[k], all_yhat[k], s=1)
+
+        # draw x=y line
+        axes[i].plot(
+            [all_y[k].min(), all_y[k].max()],
+            [all_y[k].min(), all_y[k].max()],
+            'k--',
+            lw=1
+        )
+
+        axes[i].set_xlabel('ground truth')
+        axes[i].set_ylabel('prediction')
+        axes[i].set_title(k + '\nSpearmanR: {:.3f}'.format(test_metrics[f'test/{k}_SpearmanR']) + '\nPearsonR: {:.3f}'.format(test_metrics[f'test/{k}_PearsonR']))
+    plt.savefig(os.path.join('oracle_test_predictions.png'))
+    plt.show()
+    
+    # create pairwise plots of predictions and ground truth
+    fig, axes = plt.subplots(1, 3, figsize=(15, 7))
+    count = 0
+    for i, k in enumerate(all_y):
+        for j, k2 in enumerate(all_y):
+            if i >= j:
+                continue
+            axes[count].scatter(all_y[k], all_y[k2], s=1, label="ground truth")
+            axes[count].scatter(all_yhat[k], all_yhat[k2], s=1, label="prediction")
+
+            # draw x=y line
+            axes[count].plot(
+                [all_y[k].min(), all_y[k].max()],
+                [all_y[k].min(), all_y[k].max()],
+                'k--',
+                lw=1
+            )
+
+            axes[count].set_xlabel(k)
+            axes[count].set_ylabel(k2)
+            axes[count].legend()
+            axes[count].set_title(k + ' vs. ' + k2)
+            count += 1
+    plt.savefig(os.path.join('oracle_test_predictions_pairwise.png'))
+    plt.show()
 
     @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
     def train_step(train_state, rng, batch1, batch2):
@@ -188,47 +348,70 @@ def main(argv):
         train_state = train_state.apply_gradients(grads=grads)
         return train_state, rng_generator(), metrics
 
-    @partial(jax.pmap, axis_name='dp', donate_argnums=1)
-    def eval_step(train_state, rng, batch1, batch2):
+    @partial(jax.pmap, axis_name='dp', donate_argnums=2)
+    def eval_step(train_state, predictor_train_state, rng, batch):
         rng_generator = jax_utils.JaxRNG(rng)
 
-        total_loss, fitness_loss, total_diversity_loss, entropy_loss, diversity_loss, intermediate_repr_loss = model.apply(
+        total_loss, \
+        fitness_loss, \
+        total_diversity_loss, \
+        entropy_loss, \
+        diversity_loss, \
+        intermediate_repr_loss, \
+        samples_predictions1, \
+        samples_predictions2, \
+        pwm1, \
+        pwm2, \
+        samples1, \
+        samples2 = model.apply(
             train_state.params,
-            inputs1=batch1,
-            inputs2=batch2,
+            inputs1=batch,
+            inputs2=batch,
             deterministic=True,
+            return_samples=True,
             rngs=rng_generator(model.rng_keys()),
         )
 
+        # _, thp1_output, jurkat_output, k562_output = predictor.apply(
+        #     predictor_train_state.params,
+        #     inputs=samples1.reshape(-1, samples1.shape[2], samples1.shape[3]),
+        #     deterministic=True,
+        #     rngs=rng_generator(predictor.rng_keys()),
+        # )
+
         aux_values = {
                 "fitness_loss": fitness_loss,
-                "total_diversity_loss": total_diversity_loss,
-                "entropy_loss": entropy_loss,
-                "diversity_loss": diversity_loss,
-                "intermediate_repr_loss": intermediate_repr_loss,
-                "loss": total_loss,
+                "average_thp1": jnp.mean(samples_predictions1[:, :, 0]),
+                "average_jurkat": jnp.mean(samples_predictions1[:, :, 1]),
+                "average_k562": jnp.mean(samples_predictions1[:, :, 2]),
+                # "average_thp1_from_predictor": jnp.mean(thp1_output),
+                # "average_jurkat_from_predictor": jnp.mean(jurkat_output),
+                # "average_k562_from_predictor": jnp.mean(k562_output),
         }
 
         metrics = jax_utils.collect_metrics(
             aux_values,
-            ['fitness_loss', 'total_diversity_loss', 'entropy_loss', 'diversity_loss', 'intermediate_repr_loss', 'loss',
-             'learning_rate', 'grad_norm', 'param_norm'],
+            ['fitness_loss', 
+             "average_thp1", "average_jurkat", "average_k562", 
+            #  "average_thp1_from_predictor", "average_jurkat_from_predictor", "average_k562_from_predictor"
+            ],
             prefix='eval',
         )
 
         metrics = jax.lax.pmean(metrics, axis_name='dp')
 
-        return metrics, rng_generator()
+        return metrics, samples1, samples_predictions1, rng_generator()
+
+    # define logger
+    logger = mlxu.WandBLogger(
+        config=FLAGS.logger,
+        variant=mlxu.get_user_flags(FLAGS, FLAGS_DEF),
+    )
 
     train_iterator = batch_iterator(FLAGS.batch_size, 100, pmap_axis_dim=jax_device_count)
-    
-    rng = jax.device_put_sharded(
-        list(jax_utils.next_rng(jax.device_count())),
-        jax.devices(),
-    )
-    train_state = replicate(train_state)
+    val_dataset = DENValidationDataset(FLAGS.batch_size, 100)
 
-    # best_val_loss = np.inf
+    best_val_fitness = np.inf
 
     for step in trange(FLAGS.total_steps, ncols=0):
         batch1, batch2 = next(train_iterator)
@@ -241,84 +424,38 @@ def main(argv):
             logger.log(train_metrics)
             tqdm.write(pformat(train_metrics))
 
-        # if step % FLAGS.eval_freq == 0:
-        #     eval_metrics = []
-        #     all_y = {'THP1': [], 'Jurkat': [], 'K562': []}
-        #     all_yhat = {'THP1': [], 'Jurkat': [], 'K562': []}
+        if step % FLAGS.eval_freq == 0:
+            eval_metrics = []
+            all_predicted_exps = {'THP1': [], 'Jurkat': [], 'K562': []}
 
-        #     val_iterator = val_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
-        #     batch = next(val_iterator)
-        #     while batch is not None:
-        #         metrics, \
-        #             thp1_y, jurkat_y, k562_y, \
-        #                 thp1_output, jurkat_output, k562_output, rng = eval_step(
-        #             train_state, rng, batch
-        #         )
-        #         eval_metrics.append(unreplicate(metrics))
-                
-        #         all_y['THP1'].append(jax.device_get(thp1_y))
-        #         all_y['Jurkat'].append(jax.device_get(jurkat_y))
-        #         all_y['K562'].append(jax.device_get(k562_y))
+            val_iterator = val_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+            batch = next(val_iterator)
+            while batch is not None:
+                metrics, samples, samples_predictions, rng = eval_step(
+                    train_state, predictor_train_state, rng, batch
+                )
+                eval_metrics.append(unreplicate(metrics))
 
-        #         all_yhat['THP1'].append(jax.device_get(thp1_output))
-        #         all_yhat['Jurkat'].append(jax.device_get(jurkat_output))
-        #         all_yhat['K562'].append(jax.device_get(k562_output))
+                all_predicted_exps['THP1'].append(samples_predictions[:, :, 0].reshape(-1))
+                all_predicted_exps['Jurkat'].append(samples_predictions[:, :, 1].reshape(-1))
+                all_predicted_exps['K562'].append(samples_predictions[:, :, 2].reshape(-1))
 
-        #         batch = next(val_iterator)
+                batch = next(val_iterator)
 
-        #     eval_metrics = average_metrics(jax.device_get(eval_metrics))
+            eval_metrics = average_metrics(jax.device_get(eval_metrics))
 
-        #     all_y = {k: np.hstack(v).reshape(-1) for k, v in all_y.items()}
-        #     all_yhat = {k: np.hstack(v).reshape(-1) for k, v in all_yhat.items()}
+            if eval_metrics['eval/fitness_loss'] < best_val_fitness:
+                best_val_fitness = eval_metrics['eval/fitness_loss']
+                if FLAGS.save_model:
+                    logger.save_pickle(
+                        jax.device_get(unreplicate(train_state).params),
+                        'best_params.pkl',
+                    )
 
-        #     for k in all_y:
-        #         # Compute Pearson correlation
-        #         eval_metrics[f'eval/{k}_PearsonR'] = stats.pearsonr(
-        #             all_y[k], all_yhat[k]
-        #         )[0]
-        #         # Compute Spearman correlation
-        #         eval_metrics[f'eval/{k}_SpearmanR'] = stats.spearmanr(
-        #             all_y[k], all_yhat[k]
-        #         )[0]
-        #         # Compute R2
-        #         eval_metrics[f'eval/{k}_R2'] = r2_score(
-        #             all_y[k], all_yhat[k]
-        #         )
-            
-        #     # Compute average Pearson correlation
-        #     eval_metrics['eval/avg_PearsonR'] = np.mean([
-        #         eval_metrics[f'eval/{k}_PearsonR'] for k in all_y
-        #     ])
-        #     # Compute average Spearman correlation
-        #     eval_metrics['eval/avg_SpearmanR'] = np.mean([
-        #         eval_metrics[f'eval/{k}_SpearmanR'] for k in all_y
-        #     ])
-        #     # Compute average R2
-        #     eval_metrics['eval/avg_R2'] = np.mean([
-        #         eval_metrics[f'eval/{k}_R2'] for k in all_y
-        #     ])
-
-        #     # if eval_metrics['eval/loss'] < best_eval_loss:
-        #     #     best_eval_loss = eval_metrics['eval/loss']
-        #     #     if FLAGS.save_model:
-        #     #         logger.save_pickle(
-        #     #             jax.device_get(unreplicate(train_state).params),
-        #     #             'best_params.pkl',
-        #     #         )
-
-        #     if eval_metrics['eval/avg_SpearmanR'] > best_eval_avg_SpearmanR:
-        #         best_eval_avg_SpearmanR = eval_metrics['eval/avg_SpearmanR']
-        #         if FLAGS.save_model:
-        #             logger.save_pickle(
-        #                 jax.device_get(unreplicate(train_state).params),
-        #                 'best_params.pkl',
-        #             )
-
-        #     # eval_metrics['eval/best_loss'] = best_eval_loss
-        #     eval_metrics['eval/best_avg_SpearmanR'] = best_eval_avg_SpearmanR
-        #     eval_metrics['step'] = step
-        #     logger.log(eval_metrics)
-        #     tqdm.write(pformat(eval_metrics))
+            eval_metrics['eval/fitness_loss'] = best_val_fitness
+            eval_metrics['step'] = step
+            logger.log(eval_metrics)
+            tqdm.write(pformat(eval_metrics))
     
     # # load best params
     # if FLAGS.save_model:

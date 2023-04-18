@@ -154,6 +154,13 @@ class DEN(nn.Module):
         self.predictor = FinetuneNetwork(self.config.predictor)
         self.loss = DEN_loss(self.config.loss)
 
+    def run_predictor(self, inputs):
+        # inputs: (batch_size, seq_length, alphabet_size)
+        # returns: (batch_size, 3)
+        intermediate, predictions_thp1, predictions_jurkat, predictions_k562 = self.predictor(inputs, deterministic=True)
+        predictions = jnp.stack([predictions_thp1, predictions_jurkat, predictions_k562], axis=1)
+        return intermediate, predictions
+
     def run_on_batch(self, inputs, deterministic=False, temperature=1.0):
         # inputs: (batch_size, latent_size)
         
@@ -178,7 +185,7 @@ class DEN(nn.Module):
                pwm_predictions, samples_predictions, \
                intermediate_pwm, intermediate_samples
 
-    def __call__(self, inputs1, inputs2, deterministic=False, temperature=1.0):
+    def __call__(self, inputs1, inputs2, deterministic=False, temperature=1.0, return_samples=False):
         pwm1, samples1, pwm_predictions1, samples_predictions1, intermediate_pwm1, intermediate_samples1 = self.run_on_batch(inputs1, deterministic=deterministic, temperature=temperature)
         pwm2, samples2, pwm_predictions2, samples_predictions2, intermediate_pwm2, intermediate_samples2 = self.run_on_batch(inputs2, deterministic=deterministic, temperature=temperature)
 
@@ -194,7 +201,13 @@ class DEN(nn.Module):
                                            samples_predictions1, samples_predictions2, \
                                            intermediate_samples1, intermediate_samples2)
         
-        return total_loss, fitness_loss, total_diversity_loss, entropy_loss, diversity_loss, intermediate_repr_loss, samples_predictions1, samples_predictions2
+        if return_samples:
+            return total_loss, fitness_loss, total_diversity_loss, entropy_loss, diversity_loss, intermediate_repr_loss, \
+                   samples_predictions1, samples_predictions2, \
+                   pwm1, pwm2, samples1, samples2
+        
+        return total_loss, fitness_loss, total_diversity_loss, entropy_loss, diversity_loss, intermediate_repr_loss, \
+               samples_predictions1, samples_predictions2
 
     @nn.nowrap
     def rng_keys(self):
