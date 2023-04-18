@@ -33,7 +33,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     save_model=False,
     remat=True,
     accumulate_gradient_steps=1,
-    lr=1e-5,
+    lr=0.001,
     lr_warmup_steps=100,
     weight_decay=1e-4,
     clip_gradient=10.0,
@@ -41,12 +41,12 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     pretrained_predictor_path="./saved_models/finetune_vanilla/best_params.pkl",
     generator_config_updates=ConfigDict({}),
     predictor_config_updates=ConfigDict({"return_intermediate": True}),
-    loss_config_updates=ConfigDict({"diff_exp_cell_ind": 0}),
+    loss_config_updates=ConfigDict({"diff_exp_cell_ind": 1}),
     oracle_train_data=FinetuneDataset.get_default_config({"split": "train", "path": "./data/finetune_data.pkl", "batch_size": 96}),
     oracle_val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
     oracle_test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
     logger=mlxu.WandBLogger.get_default_config({"output_dir": "./saved_models", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True, \
-                                                "experiment_id": "DENs_trial_THP1"}),
+                                                "experiment_id": "DENs_trial_Jurkat"}),
 )
 
 def reshape_batch_for_pmap(batch, pmap_axis_dim):
