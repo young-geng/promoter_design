@@ -454,7 +454,7 @@ def main(argv):
                         'best_params.pkl',
                     )
 
-            eval_metrics['eval/fitness_loss'] = best_val_fitness
+            eval_metrics['eval/best_fitness_loss'] = best_val_fitness
             eval_metrics['step'] = step
             logger.log(eval_metrics)
             tqdm.write(pformat(eval_metrics))
