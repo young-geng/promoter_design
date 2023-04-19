@@ -28,7 +28,7 @@ from utils import average_metrics, global_norm, get_weight_decay_mask, get_gener
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=42,
-    total_steps=250,
+    total_steps=5000,
     log_freq=20,
     eval_freq=125,
     save_model=True,
@@ -38,16 +38,16 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     lr_warmup_steps=100,
     weight_decay=1e-4,
     clip_gradient=10.0,
-    batch_size=8,
+    batch_size=16,
     pretrained_predictor_path="./saved_models/finetune_vanilla/best_params.pkl",
     generator_config_updates=ConfigDict({}),
     predictor_config_updates=ConfigDict({"return_intermediate": True}),
     loss_config_updates=ConfigDict({"diff_exp_cell_ind": 1}),
-    oracle_train_data=FinetuneDataset.get_default_config({"split": "train", "path": "./data/finetune_data.pkl", "batch_size": 96}),
-    oracle_val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
-    oracle_test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
+    oracle_train_data=FinetuneDataset.get_default_config({"split": "train", "path": "./data/finetune_data.pkl", "batch_size": 192, "ignore_last_batch": True}),
+    oracle_val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 192, "ignore_last_batch": True}),
+    oracle_test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 192, "ignore_last_batch": True}),
     logger=mlxu.WandBLogger.get_default_config({"output_dir": "./saved_models", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True, \
-                                                "experiment_id": "DENs_trial_Jurkat_2"}),
+                                                "experiment_id": "DENs_Jurkat"}),
 )
 
 def reshape_batch_for_pmap(batch, pmap_axis_dim):
@@ -98,14 +98,14 @@ def main(argv):
 
     # init models
     params = model.init(
-        inputs1=jnp.zeros((5, 100)),
-        inputs2=jnp.zeros((5, 100)),
+        inputs1=jnp.zeros((16, 100)),
+        inputs2=jnp.zeros((16, 100)),
         deterministic=False,
         rngs=jax_utils.next_rng(model.rng_keys()),
     )
 
     predictor_params = predictor.init(
-        inputs=jnp.zeros((1, 1000, 4)),
+        inputs=jnp.zeros((16, 1000, 4)),
         deterministic=False,
         rngs=jax_utils.next_rng(predictor.rng_keys()),
     )

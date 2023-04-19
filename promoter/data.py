@@ -59,6 +59,7 @@ class FinetuneDataset(object):
         config.split = 'train'
         config.batch_size = 32
         config.sequential_sample = False
+        config.ignore_last_batch = False
 
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
@@ -76,6 +77,9 @@ class FinetuneDataset(object):
         index = 0
         while (self.config.sequential_sample and index < size) or (not self.config.sequential_sample):
             if self.config.sequential_sample:
+                if (index + self.config.batch_size) > size:
+                    if self.config.ignore_last_batch:
+                        break
                 indices = np.arange(index, min(index + self.config.batch_size, size))
                 index = index + self.config.batch_size
             else:
