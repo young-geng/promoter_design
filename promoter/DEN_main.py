@@ -42,12 +42,12 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     pretrained_predictor_path="./saved_models/finetune_vanilla/best_params.pkl",
     generator_config_updates=ConfigDict({}),
     predictor_config_updates=ConfigDict({"return_intermediate": True}),
-    loss_config_updates=ConfigDict({"diff_exp_cell_ind": 1}),
+    loss_config_updates=ConfigDict({"diff_exp_cell_ind": 0}),
     oracle_train_data=FinetuneDataset.get_default_config({"split": "train", "path": "./data/finetune_data.pkl", "batch_size": 192, "ignore_last_batch": True}),
     oracle_val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 192, "ignore_last_batch": True}),
     oracle_test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 192, "ignore_last_batch": True}),
     logger=mlxu.WandBLogger.get_default_config({"output_dir": "./saved_models", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True, \
-                                                "experiment_id": "DENs_Jurkat"}),
+                                                "experiment_id": "DENs_THP1"}),
 )
 
 def reshape_batch_for_pmap(batch, pmap_axis_dim):
@@ -438,6 +438,9 @@ def main(argv):
                 )
                 eval_metrics.append(unreplicate(metrics))
 
+                samples_predictions = jax.device_get(samples_predictions)
+                samples_predictions = einops.rearrange(samples_predictions, 'p b ... -> (p b) ...')
+
                 all_predicted_exps['THP1'].append(samples_predictions[:, :, 0].reshape(-1))
                 all_predicted_exps['Jurkat'].append(samples_predictions[:, :, 1].reshape(-1))
                 all_predicted_exps['K562'].append(samples_predictions[:, :, 2].reshape(-1))
@@ -478,9 +481,12 @@ def main(argv):
         )
         eval_metrics.append(unreplicate(metrics))
 
-        all_predicted_exps['THP1'].append(samples_predictions[:, 0, 0].reshape(-1))
-        all_predicted_exps['Jurkat'].append(samples_predictions[:, 0, 1].reshape(-1))
-        all_predicted_exps['K562'].append(samples_predictions[:, 0, 2].reshape(-1))
+        samples_predictions = jax.device_get(samples_predictions)
+        samples_predictions = einops.rearrange(samples_predictions, 'p b ... -> (p b) ...')
+
+        all_predicted_exps['THP1'].append(samples_predictions[:, :, 0].reshape(-1))
+        all_predicted_exps['Jurkat'].append(samples_predictions[:, :, 1].reshape(-1))
+        all_predicted_exps['K562'].append(samples_predictions[:, :, 2].reshape(-1))
 
         batch = next(val_iterator)
     

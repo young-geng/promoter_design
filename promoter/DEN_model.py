@@ -154,13 +154,6 @@ class DEN(nn.Module):
         self.predictor = FinetuneNetwork(self.config.predictor)
         self.loss = DEN_loss(self.config.loss)
 
-    def run_predictor(self, inputs):
-        # inputs: (batch_size, seq_length, alphabet_size)
-        # returns: (batch_size, 3)
-        intermediate, predictions_thp1, predictions_jurkat, predictions_k562 = self.predictor(inputs, deterministic=True)
-        predictions = jnp.stack([predictions_thp1, predictions_jurkat, predictions_k562], axis=1)
-        return intermediate, predictions
-
     def run_on_batch(self, inputs, deterministic=False, temperature=1.0):
         # inputs: (batch_size, latent_size)
         
