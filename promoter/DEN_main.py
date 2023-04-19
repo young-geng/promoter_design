@@ -28,10 +28,10 @@ from utils import average_metrics, global_norm, get_weight_decay_mask, get_gener
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=42,
-    total_steps=3000,
+    total_steps=250,
     log_freq=20,
     eval_freq=125,
-    save_model=False,
+    save_model=True,
     remat=True,
     accumulate_gradient_steps=1,
     lr=0.001,
@@ -47,7 +47,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     oracle_val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
     oracle_test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
     logger=mlxu.WandBLogger.get_default_config({"output_dir": "./saved_models", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True, \
-                                                "experiment_id": "DENs_trial_Jurkat_1"}),
+                                                "experiment_id": "DENs_trial_Jurkat_2"}),
 )
 
 def reshape_batch_for_pmap(batch, pmap_axis_dim):
@@ -176,6 +176,12 @@ def main(argv):
     train_state = replicate(train_state)
     predictor_train_state = replicate(predictor_train_state)
 
+    # define logger
+    logger = mlxu.WandBLogger(
+        config=FLAGS.logger,
+        variant=mlxu.get_user_flags(FLAGS, FLAGS_DEF),
+    )
+
     # function to get predictions of the pretrained predictor
     @partial(jax.pmap, axis_name='dp', donate_argnums=1)
     def eval_predictor_step(predictor_train_state, rng, batch):
@@ -254,7 +260,7 @@ def main(argv):
         axes[i].set_xlabel('ground truth')
         axes[i].set_ylabel('prediction')
         axes[i].set_title(k + '\nSpearmanR: {:.3f}'.format(test_metrics[f'test/{k}_SpearmanR']) + '\nPearsonR: {:.3f}'.format(test_metrics[f'test/{k}_PearsonR']))
-    plt.savefig(os.path.join('oracle_test_predictions.png'))
+    plt.savefig(os.path.join(logger.output_dir, 'oracle_test_predictions.png'))
     plt.show()
     
     # create pairwise plots of predictions and ground truth
@@ -280,7 +286,7 @@ def main(argv):
             axes[count].legend()
             axes[count].set_title(k + ' vs. ' + k2)
             count += 1
-    plt.savefig(os.path.join('oracle_test_predictions_pairwise.png'))
+    plt.savefig(os.path.join(logger.output_dir, 'oracle_test_predictions_pairwise.png'))
     plt.show()
 
     @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
@@ -379,8 +385,10 @@ def main(argv):
         #     rngs=rng_generator(predictor.rng_keys()),
         # )
 
+        other_cells = [i for i in range(3) if i != FLAGS.loss_config_updates.diff_exp_cell_ind]
+        unweigted_fitness_loss = -jnp.mean(jnp.mean(samples_predictions1[:, :, FLAGS.loss_config_updates.diff_exp_cell_ind] - jnp.mean(samples_predictions1[:, :, other_cells], axis=2), axis=1))
         aux_values = {
-                "fitness_loss": fitness_loss,
+                "fitness_loss": unweigted_fitness_loss,
                 "average_thp1": jnp.mean(samples_predictions1[:, :, 0]),
                 "average_jurkat": jnp.mean(samples_predictions1[:, :, 1]),
                 "average_k562": jnp.mean(samples_predictions1[:, :, 2]),
@@ -401,12 +409,6 @@ def main(argv):
         metrics = jax.lax.pmean(metrics, axis_name='dp')
 
         return metrics, samples1, samples_predictions1, rng_generator()
-
-    # define logger
-    logger = mlxu.WandBLogger(
-        config=FLAGS.logger,
-        variant=mlxu.get_user_flags(FLAGS, FLAGS_DEF),
-    )
 
     train_iterator = batch_iterator(FLAGS.batch_size, 100, pmap_axis_dim=jax_device_count)
     val_dataset = DENValidationDataset(FLAGS.batch_size, 100)
@@ -457,103 +459,76 @@ def main(argv):
             logger.log(eval_metrics)
             tqdm.write(pformat(eval_metrics))
     
-    # # load best params
-    # if FLAGS.save_model:
-    #     train_state = train_state.replace(
-    #         params=mlxu.utils.load_pickle(os.path.join(logger.output_dir, 'best_params.pkl'))
-    #     )
-    #     train_state = replicate(train_state)
+    # load best params
+    if FLAGS.save_model:
+        train_state = train_state.replace(
+            params=mlxu.utils.load_pickle(os.path.join(logger.output_dir, 'best_params.pkl'))
+        )
+        train_state = replicate(train_state)
 
-    # # best val metrics
-    # val_iterator = val_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
-    # batch = next(val_iterator)
-    # all_y = {'THP1': [], 'Jurkat': [], 'K562': []}
-    # all_yhat = {'THP1': [], 'Jurkat': [], 'K562': []}
-    # while batch is not None:
-    #     metrics, \
-    #         thp1_y, jurkat_y, k562_y, \
-    #             thp1_output, jurkat_output, k562_output, rng = eval_step(
-    #         train_state, rng, batch
-    #     )
-    #     all_y['THP1'].append(jax.device_get(thp1_y))
-    #     all_y['Jurkat'].append(jax.device_get(jurkat_y))
-    #     all_y['K562'].append(jax.device_get(k562_y))
+    # best val metrics
+    eval_metrics = []
+    all_predicted_exps = {'THP1': [], 'Jurkat': [], 'K562': []}
 
-    #     all_yhat['THP1'].append(jax.device_get(thp1_output))
-    #     all_yhat['Jurkat'].append(jax.device_get(jurkat_output))
-    #     all_yhat['K562'].append(jax.device_get(k562_output))
+    val_iterator = val_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+    batch = next(val_iterator)
+    while batch is not None:
+        metrics, samples, samples_predictions, rng = eval_step(
+            train_state, predictor_train_state, rng, batch
+        )
+        eval_metrics.append(unreplicate(metrics))
 
-    #     batch = next(val_iterator)
+        all_predicted_exps['THP1'].append(samples_predictions[:, 0, 0].reshape(-1))
+        all_predicted_exps['Jurkat'].append(samples_predictions[:, 0, 1].reshape(-1))
+        all_predicted_exps['K562'].append(samples_predictions[:, 0, 2].reshape(-1))
+
+        batch = next(val_iterator)
     
-    # all_y = {k: np.hstack(v).reshape(-1) for k, v in all_y.items()}
-    # all_yhat = {k: np.hstack(v).reshape(-1) for k, v in all_yhat.items()}
-    # print("y shape: {}".format(all_y["THP1"].shape))
-    # print("yhat shape: {}".format(all_yhat["THP1"].shape))
+    eval_metrics = average_metrics(jax.device_get(eval_metrics))
+    print("Best val metrics: {}".format(pformat(eval_metrics)))
 
-    # val_metrics = {}
-    # for k in all_y:
-    #     # Compute Pearson correlation
-    #     val_metrics[f'val/{k}_PearsonR'] = stats.pearsonr(
-    #         all_y[k], all_yhat[k]
-    #     )[0]
-    #     # Compute Spearman correlation
-    #     val_metrics[f'val/{k}_SpearmanR'] = stats.spearmanr(
-    #         all_y[k], all_yhat[k]
-    #     )[0]
-    #     # Compute R2
-    #     val_metrics[f'val/{k}_R2'] = r2_score(
-    #         all_y[k], all_yhat[k]
-    #     )
-    
-    # # print best val metrics
-    # print('Best val metrics:')
-    # print(pformat(val_metrics))
+    # compare optimized sequences vs. original sequences in pairwise scatter plots
+    fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+    count = 0
+    for i, cell_line in enumerate(['THP1', 'Jurkat', 'K562']):
+        for j, cell_line2 in enumerate(['THP1', 'Jurkat', 'K562']):
+            if i >= j:
+                continue
 
-    # # test metrics
-    # test_iterator = test_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
-    # batch = next(test_iterator)
-    # all_y = {'THP1': [], 'Jurkat': [], 'K562': []}
-    # all_yhat = {'THP1': [], 'Jurkat': [], 'K562': []}
-    # while batch is not None:
-    #     metrics, \
-    #         thp1_y, jurkat_y, k562_y, \
-    #             thp1_output, jurkat_output, k562_output, rng = eval_step(
-    #         train_state, rng, batch
-    #     )
-    #     all_y['THP1'].append(jax.device_get(thp1_y))
-    #     all_y['Jurkat'].append(jax.device_get(jurkat_y))
-    #     all_y['K562'].append(jax.device_get(k562_y))
+            # first plot original expression
+            ax[count].scatter(
+                all_y[cell_line], 
+                all_y[cell_line2],
+                s=1, label='ground truth test set', alpha=0.5
+            )
 
-    #     all_yhat['THP1'].append(jax.device_get(thp1_output))
-    #     all_yhat['Jurkat'].append(jax.device_get(jurkat_output))
-    #     all_yhat['K562'].append(jax.device_get(k562_output))
+            # next plot predicted expression from original sequences
+            ax[count].scatter(
+                all_yhat[cell_line], 
+                all_yhat[cell_line2],
+                s=1, label='predictions test set', alpha=0.5
+            )
 
-    #     batch = next(test_iterator)
+            # finally plot predicted expression from optimized sequences
+            ax[count].scatter(
+                all_predicted_exps[cell_line], 
+                all_predicted_exps[cell_line2],
+                s=1, label='predictions optimized', alpha=0.5
+            )
 
-    # all_y = {k: np.hstack(v).reshape(-1) for k, v in all_y.items()}
-    # all_yhat = {k: np.hstack(v).reshape(-1) for k, v in all_yhat.items()}
-    # print("y shape: {}".format(all_y["THP1"].shape))
-    # print("yhat shape: {}".format(all_yhat["THP1"].shape))
-    
-    # test_metrics = {}
-    # for k in all_y:
-    #     # Compute Pearson correlation
-    #     test_metrics[f'test/{k}_PearsonR'] = stats.pearsonr(
-    #         all_y[k], all_yhat[k]
-    #     )[0]
-    #     # Compute Spearman correlation
-    #     test_metrics[f'test/{k}_SpearmanR'] = stats.spearmanr(
-    #         all_y[k], all_yhat[k]
-    #     )[0]
-    #     # Compute R2
-    #     test_metrics[f'test/{k}_R2'] = r2_score(
-    #         all_y[k], all_yhat[k]
-    #     )
+            # add x=y line
+            ax[count].plot(
+                [all_yhat[cell_line].min(), all_yhat[cell_line].max()],
+                [all_yhat[cell_line].min(), all_yhat[cell_line].max()],
+                'k--', lw=1, label='x=y'
+            )
 
-    # # print test metrics
-    # logger.log(test_metrics)
-    # print('Test metrics:')
-    # print(pformat(test_metrics))
+            ax[count].set_xlabel(cell_line)
+            ax[count].set_ylabel(cell_line2)
+            ax[count].legend()
+
+            count += 1
+    plt.savefig(os.path.join(logger.output_dir, 'optimized_seqs_scatter_plots.png'))
 
 
 if __name__ == '__main__':
