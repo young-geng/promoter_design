@@ -68,7 +68,32 @@ class FinetuneDataset(object):
     def __init__(self, config):
         self.config = self.get_default_config(config)
         assert self.config.path != ''
-        self.data = mlxu.load_pickle(self.config.path)[self.config.split]
+        all_data = mlxu.load_pickle(self.config.path)
+        if self.config.split == 'all':
+            self.data = {
+                'sequences': np.concatenate([
+                    all_data['train']['sequences'],
+                    all_data['val']['sequences'],
+                    all_data['test']['sequences'],
+                ], axis=0),
+                'thp1_output': np.concatenate([
+                    all_data['train']['thp1_output'],
+                    all_data['val']['thp1_output'],
+                    all_data['test']['thp1_output'],
+                ], axis=0),
+                'jurkat_output': np.concatenate([
+                    all_data['train']['jurkat_output'],
+                    all_data['val']['jurkat_output'],
+                    all_data['test']['jurkat_output'],
+                ], axis=0),
+                'k562_output': np.concatenate([
+                    all_data['train']['k562_output'],
+                    all_data['val']['k562_output'],
+                    all_data['test']['k562_output'],
+                ], axis=0),
+            }
+        else:
+            self.data = all_data[self.config.split]
 
     def __len__(self):
         return self.data['sequences'].shape[0]
