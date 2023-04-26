@@ -34,6 +34,9 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     lr=1e-4,
     lr_warmup_steps=1000,
     weight_decay=1e-3,
+    thp1_opt_weight=1.0,
+    jurkat_opt_weight=1.0,
+    k562_opt_weight=1.0,
     use_coms_loss=False,
     coms_loss_weight=0.0,
     clip_gradient=10.0,
@@ -148,15 +151,15 @@ def main(argv):
 
         def objectve_funtion(seq, rng, params, target='thp1', reduce_mean=False):
             rng_generator = jax_utils.JaxRNG(rng)
-            thp1_output, jurkat_output, k562_output = model.apply(
+            thp1_pred, jurkat_pred, k562_pred = model.apply(
                 params,
                 inputs=seq,
                 deterministic=False,
                 rngs=rng_generator(model.rng_keys()),
             )
-            thp1_diff = thp1_output - 0.5 * jurkat_output - 0.5 * k562_output
-            jurkat_diff = jurkat_output - 0.5 * thp1_output - 0.5 * k562_output
-            k562_diff = k562_output - 0.5 * thp1_output - 0.5 * jurkat_output
+            thp1_diff = FLAGS.thp1_opt_weight * thp1_pred - 0.5 * jurkat_pred - 0.5 * k562_pred
+            jurkat_diff = FLAGS.jurkat_opt_weight * jurkat_pred - 0.5 * thp1_pred - 0.5 * k562_pred
+            k562_diff = FLAGS.k562_opt_weight * k562_pred - 0.5 * thp1_pred - 0.5 * jurkat_pred
 
             if reduce_mean:
                 reduce_fn = jnp.mean
@@ -174,6 +177,12 @@ def main(argv):
             else:
                 raise ValueError(f'Unknown target {target}')
 
+        def count_mutations(start, end):
+            return jnp.sum(
+                jnp.argmax(start, axis=-1) != jnp.argmax(end, axis=-1),
+                axis=-1,
+            ).astype(jnp.float32)
+
         ds_thp1_diff, ds_jurkat_diff, ds_k562_diff = objectve_funtion(
             starting_seq, rng_generator(),
             params=params, target='all', reduce_mean=True
@@ -187,11 +196,7 @@ def main(argv):
             target='thp1',
             reduce_mean=False
         )
-
-        thp1_n_mutations = jnp.sum(
-            jnp.argmax(thp1_optimized_seq, axis=-1) != jnp.argmax(starting_seq, axis=-1),
-            axis=-1,
-        ).astype(jnp.float32).mean()
+        thp1_n_mutations = count_mutations(starting_seq, thp1_optimized_seq).mean()
         opt_thp1_diff = objectve_funtion(
             thp1_optimized_seq, rng_generator(),
             params=params, target='thp1', reduce_mean=True
@@ -205,11 +210,7 @@ def main(argv):
             target='jurkat',
             reduce_mean=False
         )
-
-        jurkat_n_mutations = jnp.sum(
-            jnp.argmax(jurkat_optimized_seq, axis=-1) != jnp.argmax(starting_seq, axis=-1),
-            axis=-1,
-        ).astype(jnp.float32).mean()
+        jurkat_n_mutations = count_mutations(starting_seq, jurkat_optimized_seq).mean()
         opt_jurkat_diff = objectve_funtion(
             jurkat_optimized_seq, rng_generator(),
             params=params, target='jurkat', reduce_mean=True
@@ -223,11 +224,7 @@ def main(argv):
             target='k562',
             reduce_mean=False
         )
-
-        k562_n_mutations = jnp.sum(
-            jnp.argmax(k562_optimized_seq, axis=-1) != jnp.argmax(starting_seq, axis=-1),
-            axis=-1,
-        ).astype(jnp.float32).mean()
+        k562_n_mutations = count_mutations(starting_seq, k562_optimized_seq).mean()
         opt_k562_diff = objectve_funtion(
             k562_optimized_seq, rng_generator(),
             params=params, target='k562', reduce_mean=True

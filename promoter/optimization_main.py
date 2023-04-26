@@ -19,6 +19,9 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=42,
     load_checkpoint='',
     output_file='',
+    thp1_opt_weight=1.0,
+    jurkat_opt_weight=1.0,
+    k562_opt_weight=1.0,
     sequence_optimizer=SequenceOptimizer.get_default_config(),
     finetune_network=FinetuneNetwork.get_default_config(),
     data=FinetuneDataset.get_default_config(),
@@ -58,9 +61,9 @@ def main(argv):
                 deterministic=True,
                 rngs=rng_generator(model.rng_keys()),
             )
-            thp1_diff = thp1_pred - 0.5 * jurkat_pred - 0.5 * k562_pred
-            jurkat_diff = jurkat_pred - 0.5 * thp1_pred - 0.5 * k562_pred
-            k562_diff = k562_pred - 0.5 * thp1_pred - 0.5 * jurkat_pred
+            thp1_diff = FLAGS.thp1_opt_weight * thp1_pred - 0.5 * jurkat_pred - 0.5 * k562_pred
+            jurkat_diff = FLAGS.jurkat_opt_weight * jurkat_pred - 0.5 * thp1_pred - 0.5 * k562_pred
+            k562_diff = FLAGS.k562_opt_weight * k562_pred - 0.5 * thp1_pred - 0.5 * jurkat_pred
 
             if target == 'thp1':
                 return thp1_diff
