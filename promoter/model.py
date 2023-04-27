@@ -236,7 +236,59 @@ class PretrainNetwork(nn.Module):
     @nn.nowrap
     def rng_keys(self):
         return ('params', 'dropout')
+    
+class lentiMPRAPretrainNetwork(nn.Module):
+    config_updates: ... = None
 
+    @staticmethod
+    @nn.nowrap
+    def get_default_config(updates=None):
+        config = mlxu.config_dict()
+        config.output_head_num_layers = 2
+        config.output_head_hidden_dim = 512
+        config.output_head_activation = 'gelu'
+        config.backbone = Backbone.get_default_config()
+        if updates is not None:
+            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
+        return config
+
+    def setup(self):
+        self.config = self.get_default_config(self.config_updates)
+        self.backbone = Backbone(self.config.backbone)
+        self.output_ln = nn.LayerNorm()
+        self.k562_head = MLP(
+            output_dim=1,
+            hidden_dim=self.config.output_head_hidden_dim,
+            num_layers=self.config.output_head_num_layers,
+            activation=self.config.output_head_activation,
+        )
+        self.hepg2_head = MLP(
+            output_dim=1,
+            hidden_dim=self.config.output_head_hidden_dim,
+            num_layers=self.config.output_head_num_layers,
+            activation=self.config.output_head_activation,
+        )
+        self.wtc11_head = MLP(
+            output_dim=1,
+            hidden_dim=self.config.output_head_hidden_dim,
+            num_layers=self.config.output_head_num_layers,
+            activation=self.config.output_head_activation,
+        )
+
+    @nn.compact
+    def __call__(self, lentiMPRA_inputs, deterministic=False):
+        lentiMPRA_x = self.output_ln(
+            self.backbone(lentiMPRA_inputs, deterministic=deterministic)
+        )
+        lentiMPRA_k562_ouptut = self.k562_head(lentiMPRA_x).squeeze(-1)
+        lentiMPRA_hepg2_ouptut = self.hepg2_head(lentiMPRA_x).squeeze(-1)
+        lentiMPRA_wtc11_output = self.wtc11_head(lentiMPRA_x).squeeze(-1)
+
+        return lentiMPRA_k562_ouptut, lentiMPRA_hepg2_ouptut, lentiMPRA_wtc11_output
+
+    @nn.nowrap
+    def rng_keys(self):
+        return ('params', 'dropout')
 
 class FinetuneNetwork(nn.Module):
     config_updates: ... = None

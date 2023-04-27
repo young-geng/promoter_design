@@ -15,7 +15,9 @@ import mlxu.jax_utils as jax_utils
 
 from .data import PretrainDataset
 from .model import PretrainNetwork
-from .utils import average_metrics, global_norm, get_weight_decay_mask
+from .utils import (
+    average_metrics, global_norm, get_weight_decay_mask, compute_corr_metrics
+)
 
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
@@ -117,14 +119,8 @@ def main(argv):
         gathered_mpra_output = jax.lax.all_gather(
             mpra_output, axis_name='dp'
         ).reshape(-1)
-
-        mpra_corr = jnp.corrcoef(gathered_mpra_prediction, gathered_mpra_output)[0, 1]
-        mpra_rank_corr = jnp.corrcoef(
-            jnp.argsort(gathered_mpra_prediction), jnp.argsort(gathered_mpra_output)
-        )[0, 1]
-        mpra_r2 = (
-            1.0 - jnp.sum(jnp.square(gathered_mpra_output - gathered_mpra_prediction))
-            / jnp.sum(jnp.square(gathered_mpra_output - jnp.mean(gathered_mpra_output)))
+        mpra_corr, mpra_rank_corr, mpra_r2 = compute_corr_metrics(
+            gathered_mpra_prediction, gathered_mpra_output
         )
 
         loss = (
