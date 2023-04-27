@@ -38,16 +38,18 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     lr_warmup_steps=100,
     weight_decay=1e-4,
     clip_gradient=10.0,
-    batch_size=16,
-    pretrained_predictor_path="./saved_models/finetune_vanilla/best_params.pkl",
+    batch_size=12,
+    num_sequences_to_generate=32768,
+    use_existing_checkpoint=True,
+    pretrained_predictor_path="./data/finetune_coms_0.0.pkl",
     generator_config_updates=ConfigDict({}),
     predictor_config_updates=ConfigDict({"return_intermediate": True}),
-    loss_config_updates=ConfigDict({"diff_exp_cell_ind": 0}),
+    loss_config_updates=ConfigDict({"diff_exp_cell_ind": 2}),
     oracle_train_data=FinetuneDataset.get_default_config({"split": "train", "path": "./data/finetune_data.pkl", "batch_size": 192, "ignore_last_batch": True}),
     oracle_val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 192, "ignore_last_batch": True}),
     oracle_test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 192, "ignore_last_batch": True}),
     logger=mlxu.WandBLogger.get_default_config({"output_dir": "./saved_models", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True, \
-                                                "experiment_id": "DENs_THP1"}),
+                                                "experiment_id": "DENs_K562_COMs_0.0"}),
 )
 
 def reshape_batch_for_pmap(batch, pmap_axis_dim):
@@ -378,30 +380,47 @@ def main(argv):
             rngs=rng_generator(model.rng_keys()),
         )
 
-        # _, thp1_output, jurkat_output, k562_output = predictor.apply(
-        #     predictor_train_state.params,
-        #     inputs=samples1.reshape(-1, samples1.shape[2], samples1.shape[3]),
-        #     deterministic=True,
-        #     rngs=rng_generator(predictor.rng_keys()),
-        # )
+        # convert PWMs to one-hot by taking argmax
+        pwm1 = jnp.argmax(pwm1, axis=-1)
+        pwm1 = jax.nn.one_hot(pwm1, 4)
 
+        _, thp1_pwm1_argmax_output, jurkat_pwm1_argmax_output, k562_pwm1_argmax_output = predictor.apply(
+            predictor_train_state.params,
+            inputs=pwm1,
+            deterministic=True,
+            rngs=rng_generator(predictor.rng_keys()),
+        )
+
+        pwm1_predictions = jnp.stack([thp1_pwm1_argmax_output, jurkat_pwm1_argmax_output, k562_pwm1_argmax_output], axis=1)
+
+        # add PWM argmax to list of samples
+        samples1 = jnp.concatenate([samples1, pwm1.reshape((pwm1.shape[0], 1, pwm1.shape[1], pwm1.shape[2]))], axis=1)
+
+        # add PWM predictions to list of samples
+        samples_predictions1 = jnp.concatenate([samples_predictions1, pwm1_predictions.reshape((pwm1_predictions.shape[0], 1, pwm1_predictions.shape[1]))], axis=1)
+
+        # for every random input, keep only the maximally differentially expressed sequence
+        # first compute the differential expression for each random input
         other_cells = [i for i in range(3) if i != FLAGS.loss_config_updates.diff_exp_cell_ind]
-        unweigted_fitness_loss = -jnp.mean(jnp.mean(samples_predictions1[:, :, FLAGS.loss_config_updates.diff_exp_cell_ind] - jnp.mean(samples_predictions1[:, :, other_cells], axis=2), axis=1))
+        differential_expression = samples_predictions1[:, :, FLAGS.loss_config_updates.diff_exp_cell_ind] - jnp.mean(samples_predictions1[:, :, other_cells], axis=2)
+        # then find the index of the maximally differentially expressed sequence
+        max_diff_exp_seq_ind = jnp.argmax(differential_expression, axis=1)
+        # then keep only the maximally differentially expressed sequence
+        samples1 = jnp.stack([samples1[i, max_diff_exp_seq_ind[i], :, :] for i in range(samples1.shape[0])], axis=0)
+        samples_predictions1 = jnp.stack([samples_predictions1[i, max_diff_exp_seq_ind[i], :] for i in range(samples_predictions1.shape[0])], axis=0)
+
+        unweigted_fitness_loss = -jnp.mean(jnp.mean(samples_predictions1[:, FLAGS.loss_config_updates.diff_exp_cell_ind] - jnp.mean(samples_predictions1[:, other_cells], axis=1), axis=0))
         aux_values = {
                 "fitness_loss": unweigted_fitness_loss,
-                "average_thp1": jnp.mean(samples_predictions1[:, :, 0]),
-                "average_jurkat": jnp.mean(samples_predictions1[:, :, 1]),
-                "average_k562": jnp.mean(samples_predictions1[:, :, 2]),
-                # "average_thp1_from_predictor": jnp.mean(thp1_output),
-                # "average_jurkat_from_predictor": jnp.mean(jurkat_output),
-                # "average_k562_from_predictor": jnp.mean(k562_output),
+                "average_thp1": jnp.mean(samples_predictions1[:, 0]),
+                "average_jurkat": jnp.mean(samples_predictions1[:, 1]),
+                "average_k562": jnp.mean(samples_predictions1[:, 2])
         }
 
         metrics = jax_utils.collect_metrics(
             aux_values,
             ['fitness_loss', 
-             "average_thp1", "average_jurkat", "average_k562", 
-            #  "average_thp1_from_predictor", "average_jurkat_from_predictor", "average_k562_from_predictor"
+             "average_thp1", "average_jurkat", "average_k562"
             ],
             prefix='eval',
         )
@@ -415,52 +434,55 @@ def main(argv):
 
     best_val_fitness = np.inf
 
-    for step in trange(FLAGS.total_steps, ncols=0):
-        batch1, batch2 = next(train_iterator)
-        train_state, rng, train_metrics = train_step(
-            train_state, rng, batch1, batch2
-        )
-        if step % FLAGS.log_freq == 0:
-            train_metrics = jax.device_get(unreplicate(train_metrics))
-            train_metrics['step'] = step
-            logger.log(train_metrics)
-            tqdm.write(pformat(train_metrics))
+    if (not FLAGS.use_existing_checkpoint) or (not os.path.exists(os.path.join(logger.output_dir, 'best_params.pkl'))):
+        for step in trange(FLAGS.total_steps, ncols=0):
+            batch1, batch2 = next(train_iterator)
+            train_state, rng, train_metrics = train_step(
+                train_state, rng, batch1, batch2
+            )
+            if step % FLAGS.log_freq == 0:
+                train_metrics = jax.device_get(unreplicate(train_metrics))
+                train_metrics['step'] = step
+                logger.log(train_metrics)
+                tqdm.write(pformat(train_metrics))
 
-        if step % FLAGS.eval_freq == 0:
-            eval_metrics = []
-            all_predicted_exps = {'THP1': [], 'Jurkat': [], 'K562': []}
+            if step % FLAGS.eval_freq == 0:
+                eval_metrics = []
+                all_predicted_exps = {'THP1': [], 'Jurkat': [], 'K562': []}
 
-            val_iterator = val_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
-            batch = next(val_iterator)
-            while batch is not None:
-                metrics, samples, samples_predictions, rng = eval_step(
-                    train_state, predictor_train_state, rng, batch
-                )
-                eval_metrics.append(unreplicate(metrics))
-
-                samples_predictions = jax.device_get(samples_predictions)
-                samples_predictions = einops.rearrange(samples_predictions, 'p b ... -> (p b) ...')
-
-                all_predicted_exps['THP1'].append(samples_predictions[:, :, 0].reshape(-1))
-                all_predicted_exps['Jurkat'].append(samples_predictions[:, :, 1].reshape(-1))
-                all_predicted_exps['K562'].append(samples_predictions[:, :, 2].reshape(-1))
-
+                val_iterator = val_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
                 batch = next(val_iterator)
-
-            eval_metrics = average_metrics(jax.device_get(eval_metrics))
-
-            if eval_metrics['eval/fitness_loss'] < best_val_fitness:
-                best_val_fitness = eval_metrics['eval/fitness_loss']
-                if FLAGS.save_model:
-                    logger.save_pickle(
-                        jax.device_get(unreplicate(train_state).params),
-                        'best_params.pkl',
+                while batch is not None:
+                    metrics, samples, samples_predictions, rng = eval_step(
+                        train_state, predictor_train_state, rng, batch
                     )
+                    eval_metrics.append(unreplicate(metrics))
 
-            eval_metrics['eval/best_fitness_loss'] = best_val_fitness
-            eval_metrics['step'] = step
-            logger.log(eval_metrics)
-            tqdm.write(pformat(eval_metrics))
+                    samples_predictions = jax.device_get(samples_predictions)
+                    samples_predictions = einops.rearrange(samples_predictions, 'p b ... -> (p b) ...')
+
+                    all_predicted_exps['THP1'].append(samples_predictions[:, :, 0].reshape(-1))
+                    all_predicted_exps['Jurkat'].append(samples_predictions[:, :, 1].reshape(-1))
+                    all_predicted_exps['K562'].append(samples_predictions[:, :, 2].reshape(-1))
+
+                    batch = next(val_iterator)
+
+                eval_metrics = average_metrics(jax.device_get(eval_metrics))
+
+                if eval_metrics['eval/fitness_loss'] < best_val_fitness:
+                    best_val_fitness = eval_metrics['eval/fitness_loss']
+                    if FLAGS.save_model:
+                        logger.save_pickle(
+                            jax.device_get(unreplicate(train_state).params),
+                            'best_params.pkl',
+                        )
+
+                eval_metrics['eval/best_fitness_loss'] = best_val_fitness
+                eval_metrics['step'] = step
+                logger.log(eval_metrics)
+                tqdm.write(pformat(eval_metrics))
+    else:
+        print("Using existing checkpoint...")
     
     # load best params
     if FLAGS.save_model:
@@ -484,14 +506,56 @@ def main(argv):
         samples_predictions = jax.device_get(samples_predictions)
         samples_predictions = einops.rearrange(samples_predictions, 'p b ... -> (p b) ...')
 
-        all_predicted_exps['THP1'].append(samples_predictions[:, :, 0].reshape(-1))
-        all_predicted_exps['Jurkat'].append(samples_predictions[:, :, 1].reshape(-1))
-        all_predicted_exps['K562'].append(samples_predictions[:, :, 2].reshape(-1))
+        all_predicted_exps['THP1'].append(samples_predictions[:, 0].reshape(-1))
+        all_predicted_exps['Jurkat'].append(samples_predictions[:, 1].reshape(-1))
+        all_predicted_exps['K562'].append(samples_predictions[:, 2].reshape(-1))
 
         batch = next(val_iterator)
     
     eval_metrics = average_metrics(jax.device_get(eval_metrics))
     print("Best val metrics: {}".format(pformat(eval_metrics)))
+
+    for cell_line in ['THP1', 'Jurkat', 'K562']:
+        all_predicted_exps[cell_line] = np.concatenate(all_predicted_exps[cell_line], axis=0)
+        print("Have {} predictions for {}".format(all_predicted_exps[cell_line].shape, cell_line))
+
+    # generate more sequences for each cell line
+    print("Generating {} more sequences for each cell line...".format(FLAGS.num_sequences_to_generate))
+    final_sequences_metrics = []
+    final_sequences = []
+    final_sequences_predicted_exps = {'THP1': [], 'Jurkat': [], 'K562': []}
+
+    final_sequences_iterator = DENValidationDataset(FLAGS.batch_size, 100, FLAGS.num_sequences_to_generate).batch_iterator(pmap_axis_dim=jax_device_count)
+    batch = next(final_sequences_iterator)
+    while batch is not None:
+        metrics, samples, samples_predictions, rng = eval_step(
+            train_state, predictor_train_state, rng, batch
+        )
+        final_sequences_metrics.append(unreplicate(metrics))
+
+        samples_predictions = jax.device_get(samples_predictions)
+        samples_predictions = einops.rearrange(samples_predictions, 'p b ... -> (p b) ...')
+
+        final_sequences_predicted_exps['THP1'].append(samples_predictions[:, 0].reshape(-1))
+        final_sequences_predicted_exps['Jurkat'].append(samples_predictions[:, 1].reshape(-1))
+        final_sequences_predicted_exps['K562'].append(samples_predictions[:, 2].reshape(-1))
+
+        samples = jax.device_get(samples)
+        samples = einops.rearrange(samples, 'p b ... -> (p b) ...')
+
+        final_sequences.append(samples)
+
+        batch = next(final_sequences_iterator)
+    
+    final_sequences = np.concatenate(final_sequences, axis=0)
+    print("Have {} final sequences".format(final_sequences.shape))
+    
+    final_sequences_metrics = average_metrics(jax.device_get(final_sequences_metrics))
+    print("Final sequences metrics: {}".format(pformat(final_sequences_metrics)))
+
+    for cell_line in ['THP1', 'Jurkat', 'K562']:
+        final_sequences_predicted_exps[cell_line] = np.concatenate(final_sequences_predicted_exps[cell_line], axis=0)
+        print("Have {} predictions for {}".format(final_sequences_predicted_exps[cell_line].shape, cell_line))
 
     # compare optimized sequences vs. original sequences in pairwise scatter plots
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
@@ -519,7 +583,13 @@ def main(argv):
             ax[count].scatter(
                 all_predicted_exps[cell_line], 
                 all_predicted_exps[cell_line2],
-                s=1, label='predictions optimized', alpha=0.5
+                s=1, label='predictions optim val set', alpha=0.5
+            )
+
+            ax[count].scatter(
+                final_sequences_predicted_exps[cell_line],
+                final_sequences_predicted_exps[cell_line2],
+                s=1, label='predictions final_sequences', alpha=0.5
             )
 
             # add x=y line
@@ -535,6 +605,24 @@ def main(argv):
 
             count += 1
     plt.savefig(os.path.join(logger.output_dir, 'optimized_seqs_scatter_plots.png'))
+
+    # save final sequences
+    np.save(os.path.join(logger.output_dir, 'final_sequences.npy'), final_sequences)
+
+    # save final sequences predicted expressions
+    final_sequences_predicted_exps = np.stack([
+        final_sequences_predicted_exps['THP1'],
+        final_sequences_predicted_exps['Jurkat'],
+        final_sequences_predicted_exps['K562']
+    ], axis=-1)
+    print("Have {} final sequences predicted expressions".format(final_sequences_predicted_exps.shape)) 
+    np.save(os.path.join(logger.output_dir, 'final_sequences_predicted_exps.npy'), final_sequences_predicted_exps)
+
+    # get string sequence from one-hot
+    # ordering of one-hot is A, C, G, T
+    final_sequences = np.argmax(final_sequences, axis=-1)
+    final_sequences = np.vectorize({0: 'A', 1: 'C', 2: 'G', 3: 'T'}.get)(final_sequences)
+
 
 
 if __name__ == '__main__':

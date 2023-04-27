@@ -72,10 +72,10 @@ class DEN_loss(nn.Module):
         other_cell_inds = [i for i in range(3) if i != self.diff_exp_cell_ind]
 
         # fitness is computed as the difference between the predicted fitness of the generated sequence in the cell of interest and the average predicted fitness of the generated sequence in the other two cells
-        predicted_fitness_seq1_pwm = 2*predicted_expression_seq1_pwm[:, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq1_pwm[:, other_cell_inds], axis=1)
-        predicted_fitness_seq2_pwm = 2*predicted_expression_seq2_pwm[:, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq2_pwm[:, other_cell_inds], axis=1)
-        predicted_fitness_seq1_samples = 2*predicted_expression_seq1_samples[:, :, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq1_samples[:, :, other_cell_inds], axis=2)
-        predicted_fitness_seq2_samples = 2*predicted_expression_seq2_samples[:, :, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq2_samples[:, :, other_cell_inds], axis=2)
+        predicted_fitness_seq1_pwm = predicted_expression_seq1_pwm[:, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq1_pwm[:, other_cell_inds], axis=1)
+        predicted_fitness_seq2_pwm = predicted_expression_seq2_pwm[:, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq2_pwm[:, other_cell_inds], axis=1)
+        predicted_fitness_seq1_samples = predicted_expression_seq1_samples[:, :, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq1_samples[:, :, other_cell_inds], axis=2)
+        predicted_fitness_seq2_samples = predicted_expression_seq2_samples[:, :, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq2_samples[:, :, other_cell_inds], axis=2)
 
         # fitness loss, computed as the negative of the average predicted fitnesses of the two generated sequences in both PWM and samples modes
         fitness_loss = jnp.mean(predicted_fitness_seq1_pwm) + jnp.mean(predicted_fitness_seq2_pwm) + \
