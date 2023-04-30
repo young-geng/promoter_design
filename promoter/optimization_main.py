@@ -120,6 +120,9 @@ def main(argv):
             opt_thp1_metrics['thp1_pred'],
             opt_thp1_metrics['thp1_diff'],
         )
+        opt_thp1_metrics = {
+            f'thp1_opt_seq_{key}': val for key, val in opt_thp1_metrics.items()
+        }
 
         jurkat_optimized_seq = sequence_optimizer(
             objectve_funtion,
@@ -138,6 +141,9 @@ def main(argv):
             opt_jurkat_metrics['jurkat_pred'],
             opt_jurkat_metrics['jurkat_diff'],
         )
+        opt_jurkat_metrics = {
+            f'jurkat_opt_seq_{key}': val for key, val in opt_jurkat_metrics.items()
+        }
 
         k562_optimized_seq = sequence_optimizer(
             objectve_funtion,
@@ -156,6 +162,9 @@ def main(argv):
             opt_k562_metrics['k562_pred'],
             opt_k562_metrics['k562_diff'],
         )
+        opt_k562_metrics = {
+            f'k562_opt_seq_{key}': val for key, val in opt_k562_metrics.items()
+        }
 
         thp1_gap = opt_thp1_diff - ds_thp1_diff
         jurkat_gap = opt_jurkat_diff - ds_jurkat_diff
@@ -190,6 +199,10 @@ def main(argv):
             thp1_n_mutations=thp1_n_mutations,
             jurkat_n_mutations=jurkat_n_mutations,
             k562_n_mutations=k562_n_mutations,
+
+            **opt_thp1_metrics,
+            **opt_jurkat_metrics,
+            **opt_k562_metrics,
         )
         return rng_generator(), results
 
