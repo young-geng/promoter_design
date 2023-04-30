@@ -47,12 +47,12 @@ class DEN_loss(nn.Module):
         self.eps = self.config.eps
         self.diff_exp_cell_ind = self.config.diff_exp_cell_ind
 
-        self.fitness_loss_coef = self.param('fitness_loss_coef', lambda key, shape: jnp.zeros(shape), (1, ))
-        self.diversity_loss_coef = self.param('diversity_loss_coef', lambda key, shape: jnp.zeros(shape), (1, ))
-        self.diversity_loss_intermediate_repr_coef = self.param('diversity_loss_intermediate_repr_coef', lambda key, shape: jnp.zeros(shape), (1, ))
-        self.entropy_loss_coef = self.param('entropy_loss_coef', lambda key, shape: jnp.zeros(shape), (1, ))
-        self.motif_loss_coef = self.param('motif_loss_coef', lambda key, shape: jnp.zeros(shape), (1, ))
-        self.motif_loss_intermediate_repr_coef = self.param('motif_loss_intermediate_repr_coef', lambda key, shape: jnp.zeros(shape), (1, ))
+#         self.fitness_loss_coef = self.param('fitness_loss_coef', lambda key, shape: jnp.zeros(shape), (1, ))
+#         self.diversity_loss_coef = self.param('diversity_loss_coef', lambda key, shape: jnp.zeros(shape), (1, ))
+#         self.diversity_loss_intermediate_repr_coef = self.param('diversity_loss_intermediate_repr_coef', lambda key, shape: jnp.zeros(shape), (1, ))
+#         self.entropy_loss_coef = self.param('entropy_loss_coef', lambda key, shape: jnp.zeros(shape), (1, ))
+#         self.motif_loss_coef = self.param('motif_loss_coef', lambda key, shape: jnp.zeros(shape), (1, ))
+#         self.motif_loss_intermediate_repr_coef = self.param('motif_loss_intermediate_repr_coef', lambda key, shape: jnp.zeros(shape), (1, ))
 
     def __call__(self, \
                  seq1_pwm, seq2_pwm, \
@@ -72,26 +72,47 @@ class DEN_loss(nn.Module):
         other_cell_inds = [i for i in range(3) if i != self.diff_exp_cell_ind]
 
         # fitness is computed as the difference between the predicted fitness of the generated sequence in the cell of interest and the average predicted fitness of the generated sequence in the other two cells
-        predicted_fitness_seq1_pwm = 2*predicted_expression_seq1_pwm[:, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq1_pwm[:, other_cell_inds], axis=1)
-        predicted_fitness_seq2_pwm = 2*predicted_expression_seq2_pwm[:, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq2_pwm[:, other_cell_inds], axis=1)
+#         predicted_fitness_seq1_pwm = 2*predicted_expression_seq1_pwm[:, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq1_pwm[:, other_cell_inds], axis=1)
+#         predicted_fitness_seq2_pwm = 2*predicted_expression_seq2_pwm[:, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq2_pwm[:, other_cell_inds], axis=1)
         predicted_fitness_seq1_samples = 2*predicted_expression_seq1_samples[:, :, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq1_samples[:, :, other_cell_inds], axis=2)
         predicted_fitness_seq2_samples = 2*predicted_expression_seq2_samples[:, :, self.diff_exp_cell_ind] - jnp.mean(predicted_expression_seq2_samples[:, :, other_cell_inds], axis=2)
 
         # fitness loss, computed as the negative of the average predicted fitnesses of the two generated sequences in both PWM and samples modes
-        fitness_loss = jnp.mean(predicted_fitness_seq1_pwm) + jnp.mean(predicted_fitness_seq2_pwm) + \
-                       jnp.mean(jnp.mean(predicted_fitness_seq1_samples, axis=1)) + jnp.mean(jnp.mean(predicted_fitness_seq2_samples, axis=1))
+#         fitness_loss = jnp.mean(predicted_fitness_seq1_pwm) + jnp.mean(predicted_fitness_seq2_pwm) + \
+#                        jnp.mean(jnp.mean(predicted_fitness_seq1_samples, axis=1)) + jnp.mean(jnp.mean(predicted_fitness_seq2_samples, axis=1))
+        fitness_loss = jnp.mean(jnp.mean(predicted_fitness_seq1_samples, axis=1)) + jnp.mean(jnp.mean(predicted_fitness_seq2_samples, axis=1))
         fitness_loss = -fitness_loss
 
-        std = jnp.exp(self.fitness_loss_coef)**(1/2)
-        coeff = 1 / (2*(std**2))
-        fitness_loss = coeff * fitness_loss + jnp.log(std)
-        fitness_loss = fitness_loss[0]
+#         std = jnp.exp(self.fitness_loss_coef)**(1/2)
+#         coeff = 1 / (2*(std**2))
+#         fitness_loss = coeff * fitness_loss + jnp.log(std)
+#         fitness_loss = fitness_loss[0]
 
         # diversity-based loss function that computes sequence-level cosine similarity between the two generated sequences
         # optionally, an additional loss term can be added to penalize the similarity between the intermediate representations
         diversity_loss = nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples, seq2_samples, axis=3), axis=2))
         diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, 1:], seq2_samples[:, :, :-1], axis=3), axis=2)), diversity_loss)
         diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, :-1], seq2_samples[:, :, 1:], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, 2:], seq2_samples[:, :, :-2], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, :-2], seq2_samples[:, :, 2:], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, 3:], seq2_samples[:, :, :-3], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, :-3], seq2_samples[:, :, 3:], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, 4:], seq2_samples[:, :, :-4], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, :-4], seq2_samples[:, :, 4:], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, 5:], seq2_samples[:, :, :-5], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, :-5], seq2_samples[:, :, 5:], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, 6:], seq2_samples[:, :, :-6], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, :-6], seq2_samples[:, :, 6:], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, 7:], seq2_samples[:, :, :-7], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, :-7], seq2_samples[:, :, 7:], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, 8:], seq2_samples[:, :, :-8], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, :-8], seq2_samples[:, :, 8:], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, 9:], seq2_samples[:, :, :-9], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, :-9], seq2_samples[:, :, 9:], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, 10:], seq2_samples[:, :, :-10], axis=3), axis=2)), diversity_loss)
+        diversity_loss = jnp.maximum(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, :, :-10], seq2_samples[:, :, 10:], axis=3), axis=2)), diversity_loss)
+        
+        
         # diversity_loss = jax.lax.fori_loop(0, self.diversity_loss_sigma, \
         #                                    lambda x, y: jnp.max(nn.relu(-self.diversity_loss_epsilon + jnp.mean(cosine_similarity(seq1_samples[:, x:], seq2_samples[:, :-x], axis=2), axis=1)), y), \
         #                                    diversity_loss)
@@ -107,20 +128,20 @@ class DEN_loss(nn.Module):
         
         total_diversity_loss = diversity_loss + intermediate_repr_loss
 
-        std = jnp.exp(self.diversity_loss_coef)**(1/2)
-        coeff = 1 / (2*(std**2))
-        total_diversity_loss = coeff * total_diversity_loss + jnp.log(std)
-        total_diversity_loss = total_diversity_loss[0]
+#         std = jnp.exp(self.diversity_loss_coef)**(1/2)
+#         coeff = 1 / (2*(std**2))
+#         total_diversity_loss = coeff * total_diversity_loss + jnp.log(std)
+#         total_diversity_loss = total_diversity_loss[0]
 
         # entropy-based loss function that computes the entropy of the generated sequence and enforces a minimum average conservation
         entropy_loss = nn.relu(self.entropy_loss_m_bits - jnp.mean(jnp.log2(seq1_pwm.shape[2]) - \
                                                                    jnp.sum(-seq1_pwm * jnp.log2(seq1_pwm + self.eps), axis=2), axis=1))
         entropy_loss = jnp.mean(entropy_loss)
 
-        std = jnp.exp(self.entropy_loss_coef)**(1/2)
-        coeff = 1 / (2*(std**2))
-        entropy_loss = coeff * entropy_loss + jnp.log(std)
-        entropy_loss = entropy_loss[0]
+#         std = jnp.exp(self.entropy_loss_coef)**(1/2)
+#         coeff = 1 / (2*(std**2))
+#         entropy_loss = coeff * entropy_loss + jnp.log(std)
+#         entropy_loss = entropy_loss[0]
 
         # total loss
         total_loss = fitness_loss + total_diversity_loss + entropy_loss

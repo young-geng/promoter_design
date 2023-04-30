@@ -15,13 +15,13 @@
 #SBATCH --ntasks=1
 #
 # Processors per task (please always specify the total number of processors twice the number of GPUs):
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #
 # Request one GPU:
-#SBATCH --gres=gpu:A40:2
+#SBATCH --gres=gpu:2
 #
 # Wall clock limit:
-#SBATCH --time=72:00:00
+#SBATCH --time=6:00:00
 #
 #save output and error messages
 #SBATCH --output=/global/scratch/users/aniketh/slurm_logs/slurm_job_%j.out
@@ -49,4 +49,4 @@ python -m promoter.DEN_main \
     --logger.wandb_dir=$wandb_dir \
     --logger.online=True \
     --logger.experiment_id=$experiment_id \
-    --logger.project="promoter_design_jax"
+    --logger.project="promoter_design_jax_final"

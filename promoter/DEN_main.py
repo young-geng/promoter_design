@@ -28,7 +28,7 @@ from .utils import average_metrics, global_norm, get_weight_decay_mask, get_gene
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=42,
-    total_steps=5000,
+    total_steps=7500,
     log_freq=20,
     eval_freq=125,
     save_model=True,
@@ -92,6 +92,9 @@ def main(argv):
     FLAGS.loss_config_updates.diff_exp_cell_ind = int(FLAGS.loss_config_updates.diff_exp_cell_ind)
     print("Optimizing for expression in {}".format(id_to_cell[FLAGS.loss_config_updates.diff_exp_cell_ind]))
     print("Using oracle model at {}".format(FLAGS.pretrained_predictor_path))
+    
+    assert id_to_cell[FLAGS.loss_config_updates.diff_exp_cell_ind] in FLAGS.logger.experiment_id
+    assert FLAGS.pretrained_predictor_path.split("/")[-1] in FLAGS.logger.experiment_id
 
     # create DEN
     model = DEN(FLAGS.generator_config_updates, \
