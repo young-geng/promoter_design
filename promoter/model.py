@@ -245,9 +245,9 @@ class lentiMPRAPretrainNetwork(nn.Module):
     def get_default_config(updates=None):
         config = mlxu.config_dict()
         config.output_head_num_layers = 2
-        config.output_head_hidden_dim = 512
+        config.output_head_hidden_dim = 768
         config.output_head_activation = 'gelu'
-        config.backbone = Backbone.get_default_config()
+        config.backbone = Backbone.get_default_config({"transformer_blocks": 16})
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
         return config

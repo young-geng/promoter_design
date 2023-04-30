@@ -20,10 +20,10 @@ from ml_collections import ConfigDict
 
 import pdb
 
-from data import FinetuneDataset
-from model import FinetuneNetwork
-from DEN_model import DEN
-from utils import average_metrics, global_norm, get_weight_decay_mask, get_generic_mask
+from .data import FinetuneDataset
+from .model import FinetuneNetwork
+from .DEN_model import DEN
+from .utils import average_metrics, global_norm, get_weight_decay_mask, get_generic_mask
 
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
@@ -38,18 +38,16 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     lr_warmup_steps=100,
     weight_decay=1e-4,
     clip_gradient=10.0,
-    batch_size=12,
+    batch_size=8,
     num_sequences_to_generate=32768,
     use_existing_checkpoint=True,
     pretrained_predictor_path="./data/finetune_coms_0.0.pkl",
     generator_config_updates=ConfigDict({}),
     predictor_config_updates=ConfigDict({"return_intermediate": True}),
-    loss_config_updates=ConfigDict({"diff_exp_cell_ind": 2}),
-    oracle_train_data=FinetuneDataset.get_default_config({"split": "train", "path": "./data/finetune_data.pkl", "batch_size": 192, "ignore_last_batch": True}),
-    oracle_val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 192, "ignore_last_batch": True}),
+    loss_config_updates=ConfigDict({"diff_exp_cell_ind": 0}),
     oracle_test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 192, "ignore_last_batch": True}),
     logger=mlxu.WandBLogger.get_default_config({"output_dir": "./saved_models", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True, \
-                                                "experiment_id": "DENs_K562_COMs_0.0"}),
+                                                "experiment_id": "default"}),
 )
 
 def reshape_batch_for_pmap(batch, pmap_axis_dim):
@@ -89,6 +87,11 @@ class DENValidationDataset:
 def main(argv):
     jax_utils.set_random_seed(FLAGS.seed)
     jax_device_count = jax.device_count()
+    
+    id_to_cell = ["THP1", "Jurkat", "K562"]
+    FLAGS.loss_config_updates.diff_exp_cell_ind = int(FLAGS.loss_config_updates.diff_exp_cell_ind)
+    print("Optimizing for expression in {}".format(id_to_cell[FLAGS.loss_config_updates.diff_exp_cell_ind]))
+    print("Using oracle model at {}".format(FLAGS.pretrained_predictor_path))
 
     # create DEN
     model = DEN(FLAGS.generator_config_updates, \
@@ -183,6 +186,7 @@ def main(argv):
         config=FLAGS.logger,
         variant=mlxu.get_user_flags(FLAGS, FLAGS_DEF),
     )
+    print("Saving final DEN model at {}".format(os.path.join(logger.output_dir, "best_params.pkl")))
 
     # function to get predictions of the pretrained predictor
     @partial(jax.pmap, axis_name='dp', donate_argnums=1)

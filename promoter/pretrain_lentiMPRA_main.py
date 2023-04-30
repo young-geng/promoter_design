@@ -37,11 +37,11 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     weight_decay=1e-3,
     clip_gradient=10.0,
     pretrain_network=lentiMPRAPretrainNetwork.get_default_config(),
-    train_data=lentiMPRADataset.get_default_config({"split": "train", "path": "./data/lentiMPRA_data.pkl", "batch_size": 96}),
-    val_data=lentiMPRADataset.get_default_config({"split": "val", "path": "./data/lentiMPRA_data.pkl", "batch_size": 96, "sequential_sample": True}),
-    test_data=lentiMPRADataset.get_default_config({"split": "test", "path": "./data/lentiMPRA_data.pkl", "batch_size": 96, "sequential_sample": True}),
-    logger=mlxu.WandBLogger.get_default_config({"output_dir": "./saved_models", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True, \
-                                                "experiment_id": "lentiMPRA_pretraining"}),
+    train_data=lentiMPRADataset.get_default_config({"split": "train", "path": "/global/scratch/users/aniketh/promoter_modelling/jax_data/lentiMPRA_data.pkl", "batch_size": 96}),
+    val_data=lentiMPRADataset.get_default_config({"split": "val", "path": "/global/scratch/users/aniketh/promoter_modelling/jax_data/lentiMPRA_data.pkl", "batch_size": 96, "sequential_sample": True}),
+    test_data=lentiMPRADataset.get_default_config({"split": "test", "path": "/global/scratch/users/aniketh/promoter_modelling/jax_data/lentiMPRA_data.pkl", "batch_size": 96, "sequential_sample": True}),
+    logger=mlxu.WandBLogger.get_default_config({"output_dir": "/global/scratch/users/aniketh/promoter_modelling/jax_data/saved_models", "project": "promoter_design_jax", "wandb_dir": "/global/scratch/users/aniketh/promoter_modelling/jax_data/wandb", "online": True, \
+                                                "experiment_id": "lentiMPRA_pretraining_savio_16L_b96_lr1e-4_rerun"}),
 )
 
 
