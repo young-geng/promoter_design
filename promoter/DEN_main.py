@@ -465,9 +465,9 @@ def main(argv):
                     samples_predictions = jax.device_get(samples_predictions)
                     samples_predictions = einops.rearrange(samples_predictions, 'p b ... -> (p b) ...')
 
-                    all_predicted_exps['THP1'].append(samples_predictions[:, :, 0].reshape(-1))
-                    all_predicted_exps['Jurkat'].append(samples_predictions[:, :, 1].reshape(-1))
-                    all_predicted_exps['K562'].append(samples_predictions[:, :, 2].reshape(-1))
+                    all_predicted_exps['THP1'].append(samples_predictions[:, 0].reshape(-1))
+                    all_predicted_exps['Jurkat'].append(samples_predictions[:, 1].reshape(-1))
+                    all_predicted_exps['K562'].append(samples_predictions[:, 2].reshape(-1))
 
                     batch = next(val_iterator)
 

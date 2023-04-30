@@ -3,19 +3,19 @@
 #SBATCH --job-name=train_DEN
 #
 # Account:
-#SBATCH --account=co_nilah
+#SBATCH --account=fc_nilah
 #
 # Partition:
 #SBATCH --partition=savio3_gpu
 #
 # QoS:
-#SBATCH --qos=savio_lowprio
+#SBATCH --qos=a40_gpu3_normal
 #
 # Number of tasks (one for each GPU desired for use case):
 #SBATCH --ntasks=1
 #
 # Processors per task (please always specify the total number of processors twice the number of GPUs):
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #
 # Request one GPU:
 #SBATCH --gres=gpu:A40:2
