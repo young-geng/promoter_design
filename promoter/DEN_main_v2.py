@@ -22,7 +22,7 @@ import pdb
 
 from .data import FinetuneDataset
 from .model import FinetuneNetwork
-from .DEN_model import DEN
+from .DEN_model_v2 import DEN
 from .utils import average_metrics, global_norm, get_weight_decay_mask, get_generic_mask
 
 
