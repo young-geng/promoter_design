@@ -38,13 +38,13 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     hepg2_loss_weight=1.0,
     mpra_loss_weight=1.0,
     clip_gradient=10.0,
-    load_pretrained='./data/pretrained_1.pkl',
+    load_pretrained='./saved_models/lentiMPRA_pretraining_savio/best_params.pkl',
     finetune_network=FinetuneNetwork.get_default_config(),
     train_data=FinetuneDataset.get_default_config({"split": "train", "path": "./data/finetune_data.pkl", "batch_size": 96}),
     val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
     test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
     logger=mlxu.WandBLogger.get_default_config({"output_dir": "./saved_models", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True, \
-                                                "experiment_id": "finetune_vanilla"}),
+                                                "experiment_id": "finetune_vanilla_lentiMPRA_pretraining"}),
 )
 
 
@@ -208,14 +208,30 @@ def main(argv):
                     train_state, rng, batch
                 )
                 eval_metrics.append(unreplicate(metrics))
-                
-                all_y['THP1'].append(jax.device_get(thp1_y))
-                all_y['Jurkat'].append(jax.device_get(jurkat_y))
-                all_y['K562'].append(jax.device_get(k562_y))
 
-                all_yhat['THP1'].append(jax.device_get(thp1_output))
-                all_yhat['Jurkat'].append(jax.device_get(jurkat_output))
-                all_yhat['K562'].append(jax.device_get(k562_output))
+                thp1_y = jax.device_get(thp1_y)
+                jurkat_y = jax.device_get(jurkat_y)
+                k562_y = jax.device_get(k562_y)
+
+                thp1_y = einops.rearrange(thp1_y, 'd b -> (d b)')
+                jurkat_y = einops.rearrange(jurkat_y, 'd b -> (d b)')
+                k562_y = einops.rearrange(k562_y, 'd b -> (d b)')
+
+                thp1_output = jax.device_get(thp1_output)
+                jurkat_output = jax.device_get(jurkat_output)
+                k562_output = jax.device_get(k562_output)
+
+                thp1_output = einops.rearrange(thp1_output, 'd b -> (d b)')
+                jurkat_output = einops.rearrange(jurkat_output, 'd b -> (d b)')
+                k562_output = einops.rearrange(k562_output, 'd b -> (d b)')
+
+                all_y['THP1'].append(thp1_y)
+                all_y['Jurkat'].append(jurkat_y)
+                all_y['K562'].append(k562_y)
+
+                all_yhat['THP1'].append(thp1_output)
+                all_yhat['Jurkat'].append(jurkat_output)
+                all_yhat['K562'].append(k562_output)
 
                 batch = next(val_iterator)
 
@@ -292,13 +308,30 @@ def main(argv):
                 thp1_output, jurkat_output, k562_output, rng = eval_step(
             train_state, rng, batch
         )
-        all_y['THP1'].append(jax.device_get(thp1_y))
-        all_y['Jurkat'].append(jax.device_get(jurkat_y))
-        all_y['K562'].append(jax.device_get(k562_y))
+        
+        thp1_y = jax.device_get(thp1_y)
+        jurkat_y = jax.device_get(jurkat_y)
+        k562_y = jax.device_get(k562_y)
 
-        all_yhat['THP1'].append(jax.device_get(thp1_output))
-        all_yhat['Jurkat'].append(jax.device_get(jurkat_output))
-        all_yhat['K562'].append(jax.device_get(k562_output))
+        thp1_y = einops.rearrange(thp1_y, 'd b -> (d b)')
+        jurkat_y = einops.rearrange(jurkat_y, 'd b -> (d b)')
+        k562_y = einops.rearrange(k562_y, 'd b -> (d b)')
+
+        thp1_output = jax.device_get(thp1_output)
+        jurkat_output = jax.device_get(jurkat_output)
+        k562_output = jax.device_get(k562_output)
+
+        thp1_output = einops.rearrange(thp1_output, 'd b -> (d b)')
+        jurkat_output = einops.rearrange(jurkat_output, 'd b -> (d b)')
+        k562_output = einops.rearrange(k562_output, 'd b -> (d b)')
+
+        all_y['THP1'].append(thp1_y)
+        all_y['Jurkat'].append(jurkat_y)
+        all_y['K562'].append(k562_y)
+
+        all_yhat['THP1'].append(thp1_output)
+        all_yhat['Jurkat'].append(jurkat_output)
+        all_yhat['K562'].append(k562_output)
 
         batch = next(val_iterator)
     
@@ -337,13 +370,30 @@ def main(argv):
                 thp1_output, jurkat_output, k562_output, rng = eval_step(
             train_state, rng, batch
         )
-        all_y['THP1'].append(jax.device_get(thp1_y))
-        all_y['Jurkat'].append(jax.device_get(jurkat_y))
-        all_y['K562'].append(jax.device_get(k562_y))
+        
+        thp1_y = jax.device_get(thp1_y)
+        jurkat_y = jax.device_get(jurkat_y)
+        k562_y = jax.device_get(k562_y)
 
-        all_yhat['THP1'].append(jax.device_get(thp1_output))
-        all_yhat['Jurkat'].append(jax.device_get(jurkat_output))
-        all_yhat['K562'].append(jax.device_get(k562_output))
+        thp1_y = einops.rearrange(thp1_y, 'd b -> (d b)')
+        jurkat_y = einops.rearrange(jurkat_y, 'd b -> (d b)')
+        k562_y = einops.rearrange(k562_y, 'd b -> (d b)')
+
+        thp1_output = jax.device_get(thp1_output)
+        jurkat_output = jax.device_get(jurkat_output)
+        k562_output = jax.device_get(k562_output)
+
+        thp1_output = einops.rearrange(thp1_output, 'd b -> (d b)')
+        jurkat_output = einops.rearrange(jurkat_output, 'd b -> (d b)')
+        k562_output = einops.rearrange(k562_output, 'd b -> (d b)')
+
+        all_y['THP1'].append(thp1_y)
+        all_y['Jurkat'].append(jurkat_y)
+        all_y['K562'].append(k562_y)
+
+        all_yhat['THP1'].append(thp1_output)
+        all_yhat['Jurkat'].append(jurkat_output)
+        all_yhat['K562'].append(k562_output)
 
         batch = next(test_iterator)
 
