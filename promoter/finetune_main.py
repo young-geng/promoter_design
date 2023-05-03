@@ -39,6 +39,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     k562_opt_weight=1.0,
     use_coms_loss=False,
     coms_loss_weight=0.0,
+    clip_coms_loss=True,
     clip_gradient=10.0,
     load_pretrained='',
     sequence_optimizer=SequenceOptimizer.get_default_config(),
@@ -149,7 +150,7 @@ def main(argv):
         rng_generator = jax_utils.JaxRNG(rng)
         starting_seq = jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32)[:, :, :4]
 
-        def objectve_funtion(seq, rng, params, target='thp1', reduce_mean=False):
+        def objectve_funtion(seq, rng, params, target='thp1'):
             rng_generator = jax_utils.JaxRNG(rng)
             thp1_pred, jurkat_pred, k562_pred = model.apply(
                 params,
@@ -161,19 +162,14 @@ def main(argv):
             jurkat_diff = FLAGS.jurkat_opt_weight * jurkat_pred - 0.5 * thp1_pred - 0.5 * k562_pred
             k562_diff = FLAGS.k562_opt_weight * k562_pred - 0.5 * thp1_pred - 0.5 * jurkat_pred
 
-            if reduce_mean:
-                reduce_fn = jnp.mean
-            else:
-                reduce_fn = lambda x: x
-
             if target == 'thp1':
-                return reduce_fn(thp1_diff)
+                return thp1_diff
             elif target == 'jurkat':
-                return reduce_fn(jurkat_diff)
+                return jurkat_diff
             elif target == 'k562':
-                return reduce_fn(k562_diff)
+                return k562_diff
             elif target == 'all':
-                return reduce_fn(thp1_diff), reduce_fn(jurkat_diff), reduce_fn(k562_diff)
+                return thp1_diff, jurkat_diff, k562_diff
             else:
                 raise ValueError(f'Unknown target {target}')
 
@@ -185,7 +181,7 @@ def main(argv):
 
         ds_thp1_diff, ds_jurkat_diff, ds_k562_diff = objectve_funtion(
             starting_seq, rng_generator(),
-            params=params, target='all', reduce_mean=True
+            params=params, target='all'
         )
 
         thp1_optimized_seq = sequence_optimizer(
@@ -194,12 +190,11 @@ def main(argv):
             rng_generator(),
             params=params,
             target='thp1',
-            reduce_mean=False
         )
         thp1_n_mutations = count_mutations(starting_seq, thp1_optimized_seq).mean()
         opt_thp1_diff = objectve_funtion(
             thp1_optimized_seq, rng_generator(),
-            params=params, target='thp1', reduce_mean=True
+            params=params, target='thp1'
         )
 
         jurkat_optimized_seq = sequence_optimizer(
@@ -208,12 +203,11 @@ def main(argv):
             rng_generator(),
             params=params,
             target='jurkat',
-            reduce_mean=False
         )
         jurkat_n_mutations = count_mutations(starting_seq, jurkat_optimized_seq).mean()
         opt_jurkat_diff = objectve_funtion(
             jurkat_optimized_seq, rng_generator(),
-            params=params, target='jurkat', reduce_mean=True
+            params=params, target='jurkat'
         )
 
         k562_optimized_seq = sequence_optimizer(
@@ -222,30 +216,38 @@ def main(argv):
             rng_generator(),
             params=params,
             target='k562',
-            reduce_mean=False
         )
         k562_n_mutations = count_mutations(starting_seq, k562_optimized_seq).mean()
         opt_k562_diff = objectve_funtion(
             k562_optimized_seq, rng_generator(),
-            params=params, target='k562', reduce_mean=True
+            params=params, target='k562'
         )
 
         thp1_gap = opt_thp1_diff - ds_thp1_diff
         jurkat_gap = opt_jurkat_diff - ds_jurkat_diff
         k562_gap = opt_k562_diff - ds_k562_diff
 
-        coms_loss = FLAGS.coms_loss_weight * (thp1_gap + jurkat_gap + k562_gap)
+        if FLAGS.clip_coms_loss:
+            coms_loss = FLAGS.coms_loss_weight * jnp.mean(
+                jnp.clip(thp1_gap, a_min=0.0) +
+                jnp.clip(jurkat_gap, a_min=0.0) +
+                jnp.clip(k562_gap, a_min=0.0)
+            )
+        else:
+            coms_loss = FLAGS.coms_loss_weight * jnp.mean(
+                thp1_gap + jurkat_gap + k562_gap
+            )
 
         aux_values = dict(
-            ds_thp1_diff=ds_thp1_diff,
-            ds_jurkat_diff=ds_jurkat_diff,
-            ds_k562_diff=ds_k562_diff,
-            opt_thp1_diff=opt_thp1_diff,
-            opt_jurkat_diff=opt_jurkat_diff,
-            opt_k562_diff=opt_k562_diff,
-            thp1_gap=thp1_gap,
-            jurkat_gap=jurkat_gap,
-            k562_gap=k562_gap,
+            ds_thp1_diff=ds_thp1_diff.mean(),
+            ds_jurkat_diff=ds_jurkat_diff.mean(),
+            ds_k562_diff=ds_k562_diff.mean(),
+            opt_thp1_diff=opt_thp1_diff.mean(),
+            opt_jurkat_diff=opt_jurkat_diff.mean(),
+            opt_k562_diff=opt_k562_diff.mean(),
+            thp1_gap=thp1_gap.mean(),
+            jurkat_gap=jurkat_gap.mean(),
+            k562_gap=k562_gap.mean(),
             thp1_n_mutations=thp1_n_mutations,
             jurkat_n_mutations=jurkat_n_mutations,
             k562_n_mutations=k562_n_mutations,
