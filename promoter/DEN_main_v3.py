@@ -22,7 +22,7 @@ import pdb
 
 from .data import FinetuneDataset
 from .model import FinetuneNetwork
-from .DEN_model_v2 import DEN
+from .DEN_model_v3 import DEN
 from .utils import average_metrics, global_norm, get_weight_decay_mask, get_generic_mask
 
 
@@ -38,7 +38,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     lr_warmup_steps=100,
     weight_decay=1e-4,
     clip_gradient=10.0,
-    batch_size=12,
+    batch_size=8,
     num_sequences_to_generate=32768,
     use_existing_checkpoint=True,
     pretrained_predictor_path="./data/finetune_coms_0.0.pkl",

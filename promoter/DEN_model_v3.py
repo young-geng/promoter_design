@@ -10,7 +10,7 @@ import einops
 import mlxu.jax_utils as jax_utils
 
 from .model import FinetuneNetwork
-from .DEN_loss_v2 import DEN_loss
+from .DEN_loss_v3 import DEN_loss
 
 class ConvBlock(nn.Module):
     channels: int
