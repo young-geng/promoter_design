@@ -6,7 +6,7 @@ import mlxu
 
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
-    input_file='./data/final.csv',
+    input_file='./data/final_nozscore_normalized.csv',
     output_file='./data/finetune_data.pkl'
 )
 
