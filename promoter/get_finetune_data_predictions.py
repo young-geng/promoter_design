@@ -28,6 +28,7 @@ from .utils import average_metrics, global_norm, get_weight_decay_mask, get_gene
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=42,
     pretrained_predictor_path="./data/finetune_coms_0.0.pkl",
+    predictor_config_updates=ConfigDict({"return_intermediate": True}),
     oracle_test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 192, "ignore_last_batch": True}),
     predictions_save_dir="./predictions",
 )
@@ -43,6 +44,8 @@ def main(argv):
     os.makedirs(FLAGS.predictions_save_dir, exist_ok=True)
     output_dir = os.path.join(FLAGS.predictions_save_dir, FLAGS.pretrained_predictor_path.split('/')[-1])
     os.makedirs(output_dir, exist_ok=True)
+    
+    print(f"Getting predictions using {FLAGS.pretrained_predictor_path} and saving them in {output_dir}")
     
     # create predictor
     predictor = FinetuneNetwork(FLAGS.predictor_config_updates)
@@ -187,3 +190,6 @@ def main(argv):
     # save predictions and ground truth
     np.save(os.path.join(output_dir, 'oracle_test_predictions.npy'), all_yhat)
     np.save(os.path.join(output_dir, 'oracle_test_ground_truth.npy'), all_y)
+    
+if __name__ == '__main__':
+    mlxu.run(main)
