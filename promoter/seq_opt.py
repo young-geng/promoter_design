@@ -120,3 +120,73 @@ class SequenceOptimizer(object):
             0, self.config.total_rounds, loop_body, (seq, rng)
         )
         return jax.lax.stop_gradient(seq)
+
+
+class ExpressionObjective(object):
+
+    @staticmethod
+    def get_default_config(updates=None):
+        config = mlxu.config_dict()
+        config.type = 'target'
+
+        config.linear_thp1_weight = 1.0
+        config.linear_jurkat_weight = 1.0
+        config.linear_k562_weight = 1.0
+
+        config.target_thp1_positive = 5.0
+        config.target_thp1_negative = 1.0
+        config.target_thp1_loss = 'l1'
+
+        config.target_jurkat_positive = 5.0
+        config.target_jurkat_negative = 1.0
+        config.target_jurkat_loss = 'l2'
+
+        config.target_k562_positive = 5.0
+        config.target_k562_negative = 1.0
+        config.target_k562_loss = 'l2'
+
+        if updates is not None:
+            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
+
+        return config
+
+    def __init__(self, config):
+        self.config = self.get_default_config(config)
+
+    def __call__(self, thp1_exp, jurkat_exp, k562_exp):
+        return {
+            'linear': self.linear_objective_fn,
+            'target': self.target_objective_fn
+        }[self.config.type](thp1_exp, jurkat_exp, k562_exp)
+
+    def linear_objective_fn(self, thp1_exp, jurkat_exp, k562_exp):
+        thp1_diff = self.config.linear_thp1_weight * thp1_exp - 0.5 * jurkat_exp - 0.5 * k562_exp
+        jurkat_diff = self.config.linear_jurkat_weight * jurkat_exp - 0.5 * thp1_exp - 0.5 * k562_exp
+        k562_diff = self.config.linear_k562_weight * k562_exp - 0.5 * thp1_exp - 0.5 * jurkat_exp
+        return thp1_diff, jurkat_diff, k562_diff
+
+    def target_objective_fn(self, thp1_exp, jurkat_exp, k562_exp):
+        def obj_fn(pos, neg1, neg2, pos_target, neg_target, loss):
+            if loss == 'l2':
+                return -2 * jnp.square(pos - pos_target) - jnp.square(neg1 - neg_target) - jnp.square(neg2 - neg_target)
+            elif loss == 'l1':
+                return -2 * jnp.abs(pos - pos_target) - jnp.abs(neg1 - neg_target) - jnp.abs(neg2 - neg_target)
+            else:
+                raise ValueError('Unknown loss function: %s' % loss)
+
+        thp1_diff = obj_fn(
+            thp1_exp, jurkat_exp, k562_exp,
+            self.config.target_thp1_positive, self.config.target_thp1_negative,
+            self.config.target_thp1_loss
+        )
+        jurkat_diff = obj_fn(
+            jurkat_exp, thp1_exp, k562_exp,
+            self.config.target_jurkat_positive, self.config.target_jurkat_negative,
+            self.config.target_jurkat_loss
+        )
+        k562_diff = obj_fn(
+            k562_exp, thp1_exp, jurkat_exp,
+            self.config.target_k562_positive, self.config.target_k562_negative,
+            self.config.target_k562_loss
+        )
+        return thp1_diff, jurkat_diff, k562_diff

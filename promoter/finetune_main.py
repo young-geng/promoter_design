@@ -15,7 +15,7 @@ import mlxu.jax_utils as jax_utils
 
 from .data import FinetuneDataset
 from .model import FinetuneNetwork
-from .seq_opt import SequenceOptimizer
+from .seq_opt import SequenceOptimizer, ExpressionObjective
 from .utils import (
     average_metrics, global_norm, get_weight_decay_mask, compute_corr_metrics
 )
@@ -34,14 +34,12 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     lr=1e-4,
     lr_warmup_steps=1000,
     weight_decay=1e-3,
-    thp1_opt_weight=1.0,
-    jurkat_opt_weight=1.0,
-    k562_opt_weight=1.0,
     use_coms_loss=False,
     coms_loss_weight=0.0,
     clip_coms_loss=True,
     clip_gradient=10.0,
     load_pretrained='',
+    expression_objective=ExpressionObjective.get_default_config(),
     sequence_optimizer=SequenceOptimizer.get_default_config(),
     finetune_network=FinetuneNetwork.get_default_config(),
     train_data=FinetuneDataset.get_default_config(),
@@ -107,6 +105,7 @@ def main(argv):
     )
 
     sequence_optimizer = SequenceOptimizer(FLAGS.sequence_optimizer)
+    expression_objective = ExpressionObjective(FLAGS.expression_objective)
 
     def compute_loss(batch, thp1_output, jurkat_output, k562_output):
         thp1_loss = jnp.mean(jnp.square(thp1_output - batch['thp1_output']))
@@ -158,9 +157,9 @@ def main(argv):
                 deterministic=False,
                 rngs=rng_generator(model.rng_keys()),
             )
-            thp1_diff = FLAGS.thp1_opt_weight * thp1_pred - 0.5 * jurkat_pred - 0.5 * k562_pred
-            jurkat_diff = FLAGS.jurkat_opt_weight * jurkat_pred - 0.5 * thp1_pred - 0.5 * k562_pred
-            k562_diff = FLAGS.k562_opt_weight * k562_pred - 0.5 * thp1_pred - 0.5 * jurkat_pred
+            thp1_diff, jurkat_diff, k562_diff = expression_objective(
+                thp1_pred, jurkat_pred, k562_pred
+            )
 
             if target == 'thp1':
                 return thp1_diff
