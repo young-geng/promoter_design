@@ -3,6 +3,8 @@ import numpy as np
 import mlxu
 from tqdm import tqdm, trange
 from pprint import pprint, pformat
+import matplotlib.pyplot as plt
+import wandb
 
 import jax
 import jax.numpy as jnp
@@ -29,6 +31,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     val_steps=0,
     test_steps=0,
     save_model=False,
+    generate_sequences=True,
     remat=True,
     accumulate_gradient_steps=1,
     lr=1e-4,
@@ -45,8 +48,38 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     train_data=FinetuneDataset.get_default_config(),
     val_data=FinetuneDataset.get_default_config(),
     test_data=FinetuneDataset.get_default_config(),
+    generation_data=FinetuneDataset.get_default_config(),
     logger=mlxu.WandBLogger.get_default_config(),
 )
+
+
+def plot_diff(results, target, base):
+    figure = plt.figure()
+    plt.scatter(
+        results[f'{target}_output'],
+        results[f'{base}_output'],
+        label='dataset values',
+        color='blue', alpha=0.2, s=2
+    )
+    plt.scatter(
+        results[f'ds_{target}_pred'],
+        results[f'ds_{base}_pred'],
+        label='dataset predicted values',
+        color='green', alpha=0.2, s=2
+    )
+    plt.scatter(
+        results[f'{target}_opt_seq_{target}_pred'],
+        results[f'{target}_opt_seq_{base}_pred'],
+        label='optimized predicted values',
+        color='orange', alpha=0.2, s=2
+    )
+    plt.xlim(-1, 5)
+    plt.ylim(-1, 5)
+    plt.xlabel(target)
+    plt.ylabel(base)
+    plt.plot(np.linspace(-1, 5, 10), np.linspace(-1, 5, 10), color='red')
+    plt.legend(loc='lower center', bbox_to_anchor=(0.5, -0.6), markerscale=4)
+    return figure
 
 
 def main(argv):
@@ -103,6 +136,7 @@ def main(argv):
         tx=optimizer,
         apply_fn=None
     )
+    del params
 
     sequence_optimizer = SequenceOptimizer(FLAGS.sequence_optimizer)
     expression_objective = ExpressionObjective(FLAGS.expression_objective)
@@ -149,7 +183,7 @@ def main(argv):
         rng_generator = jax_utils.JaxRNG(rng)
         starting_seq = jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32)[:, :, :4]
 
-        def objectve_funtion(seq, rng, params, target='thp1'):
+        def objectve_funtion(seq, rng, params, target='all'):
             rng_generator = jax_utils.JaxRNG(rng)
             thp1_pred, jurkat_pred, k562_pred = model.apply(
                 params,
@@ -168,7 +202,14 @@ def main(argv):
             elif target == 'k562':
                 return k562_diff
             elif target == 'all':
-                return thp1_diff, jurkat_diff, k562_diff
+                return dict(
+                    thp1_pred=thp1_pred,
+                    jurkat_pred=jurkat_pred,
+                    k562_pred=k562_pred,
+                    thp1_diff=thp1_diff,
+                    jurkat_diff=jurkat_diff,
+                    k562_diff=k562_diff,
+                )
             else:
                 raise ValueError(f'Unknown target {target}')
 
@@ -178,9 +219,19 @@ def main(argv):
                 axis=-1,
             ).astype(jnp.float32)
 
-        ds_thp1_diff, ds_jurkat_diff, ds_k562_diff = objectve_funtion(
+        starting_seq_metrics = objectve_funtion(
             starting_seq, rng_generator(),
             params=params, target='all'
+        )
+        ds_thp1_pred, ds_jurkat_pred, ds_k562_pred = (
+            starting_seq_metrics['thp1_pred'],
+            starting_seq_metrics['jurkat_pred'],
+            starting_seq_metrics['k562_pred'],
+        )
+        ds_thp1_diff, ds_jurkat_diff, ds_k562_diff = (
+            starting_seq_metrics['thp1_diff'],
+            starting_seq_metrics['jurkat_diff'],
+            starting_seq_metrics['k562_diff'],
         )
 
         thp1_optimized_seq = sequence_optimizer(
@@ -191,10 +242,17 @@ def main(argv):
             target='thp1',
         )
         thp1_n_mutations = count_mutations(starting_seq, thp1_optimized_seq).mean()
-        opt_thp1_diff = objectve_funtion(
+        opt_thp1_metrics = objectve_funtion(
             thp1_optimized_seq, rng_generator(),
-            params=params, target='thp1'
+            params=params, target='all'
         )
+        opt_thp1_pred, opt_thp1_diff = (
+            opt_thp1_metrics['thp1_pred'],
+            opt_thp1_metrics['thp1_diff'],
+        )
+        opt_thp1_metrics = {
+            f'thp1_opt_seq_{key}': val for key, val in opt_thp1_metrics.items()
+        }
 
         jurkat_optimized_seq = sequence_optimizer(
             objectve_funtion,
@@ -203,11 +261,18 @@ def main(argv):
             params=params,
             target='jurkat',
         )
-        jurkat_n_mutations = count_mutations(starting_seq, jurkat_optimized_seq).mean()
-        opt_jurkat_diff = objectve_funtion(
+        jurkat_n_mutations = count_mutations(starting_seq, jurkat_optimized_seq)
+        opt_jurkat_metrics = objectve_funtion(
             jurkat_optimized_seq, rng_generator(),
-            params=params, target='jurkat'
+            params=params, target='all'
         )
+        opt_jurkat_pred, opt_jurkat_diff = (
+            opt_jurkat_metrics['jurkat_pred'],
+            opt_jurkat_metrics['jurkat_diff'],
+        )
+        opt_jurkat_metrics = {
+            f'jurkat_opt_seq_{key}': val for key, val in opt_jurkat_metrics.items()
+        }
 
         k562_optimized_seq = sequence_optimizer(
             objectve_funtion,
@@ -217,10 +282,17 @@ def main(argv):
             target='k562',
         )
         k562_n_mutations = count_mutations(starting_seq, k562_optimized_seq).mean()
-        opt_k562_diff = objectve_funtion(
+        opt_k562_metrics = objectve_funtion(
             k562_optimized_seq, rng_generator(),
-            params=params, target='k562'
+            params=params, target='all'
         )
+        opt_k562_pred, opt_k562_diff = (
+            opt_k562_metrics['k562_pred'],
+            opt_k562_metrics['k562_diff'],
+        )
+        opt_k562_metrics = {
+            f'k562_opt_seq_{key}': val for key, val in opt_k562_metrics.items()
+        }
 
         thp1_gap = opt_thp1_diff - ds_thp1_diff
         jurkat_gap = opt_jurkat_diff - ds_jurkat_diff
@@ -238,19 +310,40 @@ def main(argv):
             )
 
         aux_values = dict(
-            ds_thp1_diff=ds_thp1_diff.mean(),
-            ds_jurkat_diff=ds_jurkat_diff.mean(),
-            ds_k562_diff=ds_k562_diff.mean(),
-            opt_thp1_diff=opt_thp1_diff.mean(),
-            opt_jurkat_diff=opt_jurkat_diff.mean(),
-            opt_k562_diff=opt_k562_diff.mean(),
-            thp1_gap=thp1_gap.mean(),
-            jurkat_gap=jurkat_gap.mean(),
-            k562_gap=k562_gap.mean(),
+            coms_loss=coms_loss,
+
+            original_seq=batch['sequences'],
+            thp1_output=batch['thp1_output'],
+            jurkat_output=batch['jurkat_output'],
+            k562_output=batch['k562_output'],
+
+            ds_thp1_pred=ds_thp1_pred,
+            ds_jurkat_pred=ds_jurkat_pred,
+            ds_k562_pred=ds_k562_pred,
+            ds_thp1_diff=ds_thp1_diff,
+            ds_jurkat_diff=ds_jurkat_diff,
+            ds_k562_diff=ds_k562_diff,
+
+            thp1_optimized_seq=jnp.argmax(thp1_optimized_seq, axis=-1),
+            jurkat_optimized_seq=jnp.argmax(jurkat_optimized_seq, axis=-1),
+            k562_optimized_seq=jnp.argmax(k562_optimized_seq, axis=-1),
+
+            opt_thp1_pred=opt_thp1_pred,
+            opt_jurkat_pred=opt_jurkat_pred,
+            opt_k562_pred=opt_k562_pred,
+            opt_thp1_diff=opt_thp1_diff,
+            opt_jurkat_diff=opt_jurkat_diff,
+            opt_k562_diff=opt_k562_diff,
+            thp1_gap=thp1_gap,
+            jurkat_gap=jurkat_gap,
+            k562_gap=k562_gap,
             thp1_n_mutations=thp1_n_mutations,
             jurkat_n_mutations=jurkat_n_mutations,
             k562_n_mutations=k562_n_mutations,
-            coms_loss=coms_loss,
+
+            **opt_thp1_metrics,
+            **opt_jurkat_metrics,
+            **opt_k562_metrics,
         )
 
         return coms_loss, aux_values
@@ -266,6 +359,12 @@ def main(argv):
         'thp1_n_mutations', 'jurkat_n_mutations', 'k562_n_mutations',
         'coms_loss', 'loss'
     ]
+
+    @partial(jax.pmap, axis_name='dp')
+    def optimization_step(params, rng, batch):
+        rng_generator = jax_utils.JaxRNG(rng)
+        _, reults = compute_coms_loss(params, rng_generator(), batch)
+        return rng_generator(), reults
 
     @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
     def train_step(train_state, rng, batch):
@@ -356,6 +455,7 @@ def main(argv):
     train_state = replicate(train_state)
 
     best_val_loss = np.inf
+    best_params = None
 
     for step in trange(FLAGS.total_steps, ncols=0):
         train_state, rng, train_metrics = train_step(
@@ -379,11 +479,9 @@ def main(argv):
 
                 if eval_metrics['val/loss'] < best_val_loss:
                     best_val_loss = eval_metrics['val/loss']
+                    best_params = jax.device_get(unreplicate(train_state).params)
                     if FLAGS.save_model:
-                        logger.save_pickle(
-                            jax.device_get(unreplicate(train_state).params),
-                            'best_params.pkl',
-                        )
+                        logger.save_pickle(best_params, 'best_params.pkl',)
 
                 eval_metrics['val/best_loss'] = best_val_loss
                 eval_metrics['step'] = step
@@ -401,6 +499,43 @@ def main(argv):
                 eval_metrics['step'] = step
                 logger.log(eval_metrics)
                 tqdm.write(pformat(eval_metrics))
+
+    if best_params is None:
+        best_params = jax.device_get(unreplicate(train_state).params)
+
+    del train_state
+
+    if FLAGS.generate_sequences:
+        FLAGS.generation_data.sequential_sample = True  # Ensure we iterate over the whole dataset
+        dataset = FinetuneDataset(FLAGS.generation_data)
+        best_params = replicate(best_params)
+
+        data_iterator = dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+        steps = len(dataset) // FLAGS.generation_data.batch_size
+
+        results = []
+
+        for _, batch in zip(trange(steps, ncols=0), data_iterator):
+            rng, r = optimization_step(best_params, rng, batch)
+
+            results.append({
+                key: einops.rearrange(val, 'd b ... -> (d b) ...')
+                for key, val in jax.device_get(r).items()
+                if len(val.shape) > 1
+            })
+
+        results = {
+            key: np.concatenate([r[key] for r in results], axis=0)
+            for key in results[0].keys()
+        }
+        logger.save_pickle(results, 'optimized_seqs.pkl')
+
+        for target in ['thp1', 'jurkat', 'k562']:
+            for base in ['thp1', 'jurkat', 'k562']:
+                if target == base:
+                    continue
+                figure = plot_diff(results, target, base)
+                logger.log({f'opt_seq_{target}_{base}': wandb.Image(figure)})
 
 
 if __name__ == '__main__':
