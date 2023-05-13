@@ -17,13 +17,13 @@ def cosine_similarity(x1, x2, axis=1, eps=1e-8):
 
 def fitness_loss_fn(expression_vals, diff_exp_cell_ind, other_cell_inds,  l2=False, up_exp=5.0, down_exp=-1.0):
     if l2:
-        fitness = -2.0 * jnp.square(expression_vals[:, :, diff_exp_cell_ind] - up_exp)
+        fitness = 2.0 * jnp.square(expression_vals[:, :, diff_exp_cell_ind] - up_exp)
         for ind in other_cell_inds:
-            fitness -= jnp.square(expression_vals[:, :, ind] - down_exp)
+            fitness += jnp.square(expression_vals[:, :, ind] - down_exp)
     else:
-        fitness = -2.0 * jnp.abs(expression_vals[:, :, diff_exp_cell_ind] - up_exp)
+        fitness = 2.0 * jnp.abs(expression_vals[:, :, diff_exp_cell_ind] - up_exp)
         for ind in other_cell_inds:
-            fitness -= jnp.abs(expression_vals[:, :, ind] - down_exp)
+            fitness += jnp.abs(expression_vals[:, :, ind] - down_exp)
             
     return fitness
 
