@@ -14,17 +14,17 @@ class SequenceOptimizer(object):
     @staticmethod
     def get_default_config(updates=None):
         config = mlxu.config_dict()
-        config.gd_steps = 5
+        config.gd_steps = 15
         config.gd_step_size = 0.1
         config.gd_b1 = 0.9
         config.gd_b2 = 0.999
         config.gd_presoftmax_scale = 2.7
 
-        config.mutation_steps = 5
+        config.mutation_steps = 15
         config.mutation_rate = 0.1
         config.mutation_pool_size = 5
 
-        config.total_rounds = 2
+        config.total_rounds = 5
 
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
