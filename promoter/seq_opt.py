@@ -134,15 +134,15 @@ class ExpressionObjective(object):
         config.linear_k562_weight = 1.0
 
         config.target_thp1_positive = 5.0
-        config.target_thp1_negative = 1.0
+        config.target_thp1_negative = -1.0
         config.target_thp1_loss = 'l1'
 
         config.target_jurkat_positive = 5.0
-        config.target_jurkat_negative = 1.0
+        config.target_jurkat_negative = -1.0
         config.target_jurkat_loss = 'l2'
 
         config.target_k562_positive = 5.0
-        config.target_k562_negative = 1.0
+        config.target_k562_negative = -1.0
         config.target_k562_loss = 'l2'
 
         if updates is not None:
