@@ -53,32 +53,51 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
 )
 
 
-def plot_diff(results, target, base):
-    figure = plt.figure()
-    plt.scatter(
-        results[f'{target}_output'],
-        results[f'{base}_output'],
-        label='dataset values',
-        color='blue', alpha=0.2, s=2
-    )
-    plt.scatter(
-        results[f'ds_{target}_pred'],
-        results[f'ds_{base}_pred'],
-        label='dataset predicted values',
-        color='green', alpha=0.2, s=2
-    )
-    plt.scatter(
-        results[f'{target}_opt_seq_{target}_pred'],
-        results[f'{target}_opt_seq_{base}_pred'],
-        label='optimized predicted values',
-        color='orange', alpha=0.2, s=2
-    )
-    plt.xlim(-1, 5)
-    plt.ylim(-1, 5)
-    plt.xlabel(target)
-    plt.ylabel(base)
-    plt.plot(np.linspace(-1, 5, 10), np.linspace(-1, 5, 10), color='red')
-    plt.legend(loc='lower center', bbox_to_anchor=(0.5, -0.6), markerscale=4)
+def plot_diffs(results):
+    def plot_diff(target, base):
+        plt.scatter(
+            results[f'{target}_output'],
+            results[f'{base}_output'],
+            label='dataset values',
+            color='blue', alpha=0.2, s=2
+        )
+        plt.scatter(
+            results[f'ds_{target}_pred'],
+            results[f'ds_{base}_pred'],
+            label='dataset predicted values',
+            color='green', alpha=0.2, s=2
+        )
+        plt.scatter(
+            results[f'{target}_opt_seq_{target}_pred'],
+            results[f'{target}_opt_seq_{base}_pred'],
+            label='optimized predicted values',
+            color='orange', alpha=0.2, s=2
+        )
+        plt.xlim(-1, 5)
+        plt.ylim(-1, 5)
+        plt.title(f'Optimization target: {target}')
+        plt.xlabel(target)
+        plt.ylabel(base)
+        plt.plot(np.linspace(-1, 5, 10), np.linspace(-1, 5, 10), color='red')
+
+    figure = plt.figure(figsize=(9, 15))
+
+    plt.subplot(3, 2, 1)
+    plot_diff('thp1', 'jurkat')
+    plt.subplot(3, 2, 2)
+    plot_diff('thp1', 'k562')
+
+    plt.subplot(3, 2, 3)
+    plot_diff('jurkat', 'thp1')
+    plt.subplot(3, 2, 4)
+    plot_diff('jurkat', 'k562')
+
+    plt.subplot(3, 2, 5)
+    plot_diff('k562', 'thp1')
+    plt.subplot(3, 2, 6)
+    plot_diff('k562', 'jurkat')
+
+    plt.legend(loc='lower center', bbox_to_anchor=(-0.1, -0.35), markerscale=4)
     return figure
 
 
@@ -529,13 +548,7 @@ def main(argv):
             for key in results[0].keys()
         }
         logger.save_pickle(results, 'optimized_seqs.pkl')
-
-        for target in ['thp1', 'jurkat', 'k562']:
-            for base in ['thp1', 'jurkat', 'k562']:
-                if target == base:
-                    continue
-                figure = plot_diff(results, target, base)
-                logger.log({f'opt_seq_{target}_{base}': wandb.Image(figure)})
+        logger.log({f'opt_seq_diffs': wandb.Image(plot_diffs(results))})
 
 
 if __name__ == '__main__':
