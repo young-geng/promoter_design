@@ -127,6 +127,10 @@ class ExpressionObjective(object):
     @staticmethod
     def get_default_config(updates=None):
         config = mlxu.config_dict()
+        config.thp1_exp_multiplier = 1.0
+        config.jurkat_exp_multiplier = 1.0
+        config.k562_exp_multiplier = 1.0
+
         config.type = 'target'
 
         config.linear_thp1_weight = 1.0
@@ -135,7 +139,7 @@ class ExpressionObjective(object):
 
         config.target_thp1_positive = 5.0
         config.target_thp1_negative = -1.0
-        config.target_thp1_loss = 'l1'
+        config.target_thp1_loss = 'l2'
 
         config.target_jurkat_positive = 5.0
         config.target_jurkat_negative = -1.0
@@ -157,7 +161,11 @@ class ExpressionObjective(object):
         return {
             'linear': self.linear_objective_fn,
             'target': self.target_objective_fn
-        }[self.config.type](thp1_exp, jurkat_exp, k562_exp)
+        }[self.config.type](
+            self.config.thp1_exp_multiplier * thp1_exp,
+            self.config.jurkat_exp_multiplier * jurkat_exp,
+            self.config.k562_exp_multiplier * k562_exp,
+        )
 
     def linear_objective_fn(self, thp1_exp, jurkat_exp, k562_exp):
         thp1_diff = self.config.linear_thp1_weight * thp1_exp - 0.5 * jurkat_exp - 0.5 * k562_exp
