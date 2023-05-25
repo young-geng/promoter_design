@@ -14,8 +14,8 @@ class SequenceOptimizer(object):
     @staticmethod
     def get_default_config(updates=None):
         config = mlxu.config_dict()
-        config.gd_steps = 15
-        config.gd_step_size = 0.1
+        config.gd_steps = 60
+        config.gd_step_size = 0.5
         config.gd_b1 = 0.9
         config.gd_b2 = 0.999
         config.gd_presoftmax_scale = 2.7
@@ -127,6 +127,10 @@ class ExpressionObjective(object):
     @staticmethod
     def get_default_config(updates=None):
         config = mlxu.config_dict()
+
+        config.exp_clip_max = 5.0
+        config.exp_clip_min = -1.0
+
         config.thp1_exp_multiplier = 1.0
         config.jurkat_exp_multiplier = 1.0
         config.k562_exp_multiplier = 1.0
@@ -139,15 +143,15 @@ class ExpressionObjective(object):
 
         config.target_thp1_positive = 5.0
         config.target_thp1_negative = -1.0
-        config.target_thp1_loss = 'l2'
+        config.target_thp1_loss = 'l1'
 
         config.target_jurkat_positive = 5.0
         config.target_jurkat_negative = -1.0
-        config.target_jurkat_loss = 'l2'
+        config.target_jurkat_loss = 'l1'
 
         config.target_k562_positive = 5.0
         config.target_k562_negative = -1.0
-        config.target_k562_loss = 'l2'
+        config.target_k562_loss = 'l1'
 
         if updates is not None:
             config.update(mlxu.config_dict(updates).copy_and_resolve_references())
@@ -158,9 +162,12 @@ class ExpressionObjective(object):
         self.config = self.get_default_config(config)
 
     def __call__(self, thp1_exp, jurkat_exp, k562_exp):
+        thp1_exp = jnp.clip(thp1_exp, self.config.exp_clip_min, self.config.exp_clip_max)
+        jurkat_exp = jnp.clip(jurkat_exp, self.config.exp_clip_min, self.config.exp_clip_max)
+        k562_exp = jnp.clip(k562_exp, self.config.exp_clip_min, self.config.exp_clip_max)
         return {
             'linear': self.linear_objective_fn,
-            'target': self.target_objective_fn
+            'target': self.target_objective_fn,
         }[self.config.type](
             self.config.thp1_exp_multiplier * thp1_exp,
             self.config.jurkat_exp_multiplier * jurkat_exp,
@@ -168,17 +175,34 @@ class ExpressionObjective(object):
         )
 
     def linear_objective_fn(self, thp1_exp, jurkat_exp, k562_exp):
-        thp1_diff = self.config.linear_thp1_weight * thp1_exp - 0.5 * jurkat_exp - 0.5 * k562_exp
-        jurkat_diff = self.config.linear_jurkat_weight * jurkat_exp - 0.5 * thp1_exp - 0.5 * k562_exp
-        k562_diff = self.config.linear_k562_weight * k562_exp - 0.5 * thp1_exp - 0.5 * jurkat_exp
+        thp1_diff = (
+            self.config.linear_thp1_weight * thp1_exp
+            - 0.5 * jurkat_exp - 0.5 * k562_exp
+        )
+        jurkat_diff = (
+            self.config.linear_jurkat_weight * jurkat_exp
+            - 0.5 * thp1_exp - 0.5 * k562_exp
+        )
+        k562_diff = (
+            self.config.linear_k562_weight * k562_exp
+            - 0.5 * thp1_exp - 0.5 * jurkat_exp
+        )
         return thp1_diff, jurkat_diff, k562_diff
 
     def target_objective_fn(self, thp1_exp, jurkat_exp, k562_exp):
         def obj_fn(pos, neg1, neg2, pos_target, neg_target, loss):
             if loss == 'l2':
-                return -2 * jnp.square(pos - pos_target) - jnp.square(neg1 - neg_target) - jnp.square(neg2 - neg_target)
+                return (
+                    -2 * jnp.square(pos - pos_target)
+                    - jnp.square(neg1 - neg_target)
+                    - jnp.square(neg2 - neg_target)
+                )
             elif loss == 'l1':
-                return -2 * jnp.abs(pos - pos_target) - jnp.abs(neg1 - neg_target) - jnp.abs(neg2 - neg_target)
+                return (
+                    -2 * jnp.abs(pos - pos_target)
+                    - jnp.abs(neg1 - neg_target)
+                    - jnp.abs(neg2 - neg_target)
+                )
             else:
                 raise ValueError('Unknown loss function: %s' % loss)
 
