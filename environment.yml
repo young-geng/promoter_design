@@ -30,4 +30,4 @@ dependencies:
         - wandb==0.13.5
         - ml_collections
         - jupyter_http_over_ws
-        - mlxu==0.1.10
+        - mlxu==0.1.11

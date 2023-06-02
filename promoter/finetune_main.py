@@ -500,7 +500,12 @@ def main(argv):
                     best_val_loss = eval_metrics['val/loss']
                     best_params = jax.device_get(unreplicate(train_state).params)
                     if FLAGS.save_model:
-                        logger.save_pickle(best_params, 'best_params.pkl',)
+                        save_data = {
+                            'params': best_params,
+                            'flags': mlxu.user_flags_to_config_dict(FLAGS, FLAGS_DEF),
+                            'model_config': model.get_default_config(model.config_updates),
+                        }
+                        logger.save_pickle(save_data, 'best_model.pkl')
 
                 eval_metrics['val/best_loss'] = best_val_loss
                 eval_metrics['step'] = step

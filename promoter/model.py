@@ -143,9 +143,7 @@ class Backbone(nn.Module):
         config.input_encoder = 'cnn'
         config.use_position_embedding = True
         config.max_position_embeddings = 4096
-        if updates is not None:
-            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
-        return config
+        return mlxu.update_config_dict(config, updates)
 
     def setup(self):
         self.config = self.get_default_config(self.config_updates)
@@ -191,9 +189,7 @@ class PretrainNetwork(nn.Module):
         config.output_head_hidden_dim = 512
         config.output_head_activation = 'gelu'
         config.backbone = Backbone.get_default_config()
-        if updates is not None:
-            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
-        return config
+        return mlxu.update_config_dict(config, updates)
 
     def setup(self):
         self.config = self.get_default_config(self.config_updates)
@@ -249,9 +245,7 @@ class FinetuneNetwork(nn.Module):
         config.output_head_hidden_dim = 512
         config.output_head_activation = 'gelu'
         config.backbone = Backbone.get_default_config()
-        if updates is not None:
-            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
-        return config
+        return mlxu.update_config_dict(config, updates)
 
     def setup(self):
         self.config = self.get_default_config(self.config_updates)

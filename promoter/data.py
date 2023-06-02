@@ -13,11 +13,7 @@ class PretrainDataset(object):
         config.split = 'train'
         config.batch_size = 32
         config.sequential_sample = False
-
-        if updates is not None:
-            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
-
-        return config
+        return mlxu.update_config_dict(config, updates)
 
     def __init__(self, config):
         self.config = self.get_default_config(config)
@@ -59,11 +55,7 @@ class FinetuneDataset(object):
         config.split = 'train'
         config.batch_size = 32
         config.sequential_sample = False
-
-        if updates is not None:
-            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
-
-        return config
+        return mlxu.update_config_dict(config, updates)
 
     def __init__(self, config):
         self.config = self.get_default_config(config)

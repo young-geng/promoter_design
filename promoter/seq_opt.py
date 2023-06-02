@@ -26,11 +26,7 @@ class SequenceOptimizer(object):
 
         config.total_rounds = 5
 
-        if updates is not None:
-            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
-
-        return config
-
+        return mlxu.update_config_dict(config, updates)
 
     def __init__(self, config):
         self.config = self.get_default_config(config)
@@ -153,10 +149,7 @@ class ExpressionObjective(object):
         config.target_k562_negative = -1.0
         config.target_k562_loss = 'l1'
 
-        if updates is not None:
-            config.update(mlxu.config_dict(updates).copy_and_resolve_references())
-
-        return config
+        return mlxu.update_config_dict(config, updates)
 
     def __init__(self, config):
         self.config = self.get_default_config(config)
