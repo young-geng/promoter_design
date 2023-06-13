@@ -1,7 +1,17 @@
+import tqdm
 import numpy as np
 import pandas as pd
 import einops
 import mlxu
+
+
+DNA_TOKENS = {
+    'A': 0,
+    'C': 1,
+    'G': 2,
+    'T': 3,
+    'N': 4,
+}
 
 
 class PretrainDataset(object):
@@ -115,3 +125,13 @@ def reshape_batch_for_pmap(batch, pmap_axis_dim):
         key: einops.rearrange(value, '(p b) ... -> p b ...', p=pmap_axis_dim)
         for key, value in batch.items()
     }
+
+
+def tokenize_sequences(sequences, progress=False):
+    output = []
+    if progress:
+        sequences = tqdm.tqdm(sequences, ncols=0)
+    for seq in sequences:
+        output.append(np.array([DNA_TOKENS[x] for x in seq], dtype=np.int32))
+
+    return output

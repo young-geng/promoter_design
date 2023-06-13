@@ -63,7 +63,7 @@ def predict_model(model_path, sequneces):
     thp1_preds = []
     k562_preds = []
 
-    for i in range(sequneces.shape[0]):
+    for i in trange(sequneces.shape[0], ncols=0):
         batch = sequneces[i, ...]
         batch = einops.rearrange(batch, '(k b) l -> k b l', k=n_devices)
         jurkat_pred, thp1_pred, k562_pred = predict_fn(
