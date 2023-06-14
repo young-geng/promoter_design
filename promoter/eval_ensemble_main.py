@@ -59,30 +59,30 @@ def predict_model(model_path, sequneces):
         jax.devices(),
     )
 
-    jurkat_preds = []
     thp1_preds = []
+    jurkat_preds = []
     k562_preds = []
 
-    for i in trange(sequneces.shape[0], ncols=0):
+    for i in range(sequneces.shape[0]):
         batch = sequneces[i, ...]
         batch = einops.rearrange(batch, '(k b) l -> k b l', k=n_devices)
-        jurkat_pred, thp1_pred, k562_pred = predict_fn(
+        thp1_pred, jurkat_pred, k562_pred = predict_fn(
             params=params,
             rng=rng,
             seq=batch
         )
-        jurkat_pred = einops.rearrange(jax.device_get(jurkat_pred), 'k b -> (k b)')
         thp1_pred = einops.rearrange(jax.device_get(thp1_pred), 'k b -> (k b)')
+        jurkat_pred = einops.rearrange(jax.device_get(jurkat_pred), 'k b -> (k b)')
         k562_pred = einops.rearrange(jax.device_get(k562_pred), 'k b-> (k b)')
-        jurkat_preds.append(jurkat_pred)
         thp1_preds.append(thp1_pred)
+        jurkat_preds.append(jurkat_pred)
         k562_preds.append(k562_pred)
 
-    jurkat_preds = np.concatenate(jurkat_preds, axis=0)[:num_sequences, ...]
     thp1_preds = np.concatenate(thp1_preds, axis=0)[:num_sequences, ...]
+    jurkat_preds = np.concatenate(jurkat_preds, axis=0)[:num_sequences, ...]
     k562_preds = np.concatenate(k562_preds, axis=0)[:num_sequences, ...]
 
-    return jurkat_preds, thp1_preds, k562_preds
+    return thp1_preds, jurkat_preds, k562_preds
 
 
 def predict_all(sequneces):
@@ -94,21 +94,21 @@ def predict_all(sequneces):
         if os.path.isfile(model_full_path):
             models.append(model_full_path)
 
-    jurkat_preds = []
     thp1_preds = []
+    jurkat_preds = []
     k562_preds = []
 
     for model in tqdm(models, ncols=0):
-        jurkat_pred, thp1_pred, k562_pred = predict_model(model, sequneces)
-        jurkat_preds.append(jurkat_pred)
+        thp1_pred, jurkat_pred, k562_pred = predict_model(model, sequneces)
         thp1_preds.append(thp1_pred)
+        jurkat_preds.append(jurkat_pred)
         k562_preds.append(k562_pred)
 
-    jurkat_preds = np.stack(jurkat_preds, axis=0)
     thp1_preds = np.stack(thp1_preds, axis=0)
+    jurkat_preds = np.stack(jurkat_preds, axis=0)
     k562_preds = np.stack(k562_preds, axis=0)
 
-    return jurkat_preds, thp1_preds, k562_preds
+    return thp1_preds, jurkat_preds, k562_preds
 
 
 def main(argv):
@@ -119,11 +119,11 @@ def main(argv):
 
     sequence_data = mlxu.load_pickle(FLAGS.load_sequence)
 
-    for key in FLAGS.sequence_dict_keys.split(','):
-        jurkat_preds, thp1_preds, k562_preds = predict_all(sequence_data[key])
-        sequence_data[f'{key}_jurkat_preds'] = jurkat_preds
-        sequence_data[f'{key}_thp1_preds'] = thp1_preds
-        sequence_data[f'{key}_k562_preds'] = k562_preds
+    for key in tqdm(FLAGS.sequence_dict_keys.split(','), ncols=0):
+        thp1_preds, jurkat_preds, k562_preds = predict_all(sequence_data[key])
+        sequence_data[f'ensemble_{key}_thp1_pred'] = thp1_preds
+        sequence_data[f'ensemble_{key}_jurkat_pred'] = jurkat_preds
+        sequence_data[f'ensemble_{key}_k562_pred'] = k562_preds
 
     mlxu.save_pickle(sequence_data, FLAGS.output_file)
 
