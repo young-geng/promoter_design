@@ -135,3 +135,13 @@ def tokenize_sequences(sequences, progress=False):
         output.append(np.array([DNA_TOKENS[x] for x in seq], dtype=np.int32))
 
     return output
+
+
+def decode_sequences(sequences, progress=False):
+    output = []
+    codes = np.array(['A', 'C', 'G', 'T', 'N'])
+    if progress:
+        sequences = tqdm.tqdm(sequences, ncols=0)
+    for seq in sequences:
+        output.append(''.join(codes[seq]))
+    return output
