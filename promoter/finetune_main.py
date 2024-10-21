@@ -1,5 +1,7 @@
 from functools import partial
 import numpy as np
+import scipy.stats as stats
+from sklearn.metrics import r2_score
 import mlxu
 from tqdm import tqdm, trange
 from pprint import pprint, pformat
@@ -14,6 +16,8 @@ from flax.training.train_state import TrainState
 import optax
 import einops
 import mlxu.jax_utils as jax_utils
+
+import pdb
 
 from .data import FinetuneDataset
 from .model import FinetuneNetwork
@@ -457,7 +461,10 @@ def main(argv):
             aux_values, metric_keys, prefix=prefix,
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
-        return metrics, rng_generator()
+        return metrics, \
+            batch['thp1_output'], batch['jurkat_output'], batch['k562_output'], \
+            thp1_output, jurkat_output, k562_output, \
+            rng_generator()
 
     train_iterator = train_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
 

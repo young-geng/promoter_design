@@ -103,10 +103,10 @@ class FinetuneDataset(object):
     def batch_iterator(self, pmap_axis_dim=None):
         size = self.data['sequences'].shape[0]
         index = 0
-        while True:
+        while (self.config.sequential_sample and index < size) or (not self.config.sequential_sample):
             if self.config.sequential_sample:
-                indices = np.arange(index, index + self.config.batch_size) % size
-                index = (index + self.config.batch_size) % size
+                indices = np.arange(index, min(index + self.config.batch_size, size))
+                index = index + self.config.batch_size
             else:
                 indices = np.random.choice(size, self.config.batch_size)
             batch = {
@@ -118,6 +118,8 @@ class FinetuneDataset(object):
             if pmap_axis_dim is not None:
                 batch = reshape_batch_for_pmap(batch, pmap_axis_dim)
             yield batch
+        if self.config.sequential_sample:
+            yield None
 
 
 def reshape_batch_for_pmap(batch, pmap_axis_dim):
