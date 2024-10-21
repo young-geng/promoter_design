@@ -1,4 +1,4 @@
-name: promoter
+name: promoter_design
 channels:
     - defaults
     - conda-forge
