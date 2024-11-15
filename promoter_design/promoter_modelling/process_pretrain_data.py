@@ -4,9 +4,6 @@ import pandas as pd
 import h5py
 import mlxu
 
-# K562_bin
-# HepG2_bin
-
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     sure_dir='./data/SuRE',

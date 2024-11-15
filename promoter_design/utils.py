@@ -8,7 +8,6 @@ import jax.numpy as jnp
 import mlxu.jax_utils as jax_utils
 
 
-
 def average_metrics(metrics):
     averaged = {}
     for key in metrics[0].keys():
@@ -30,6 +29,7 @@ def get_weight_decay_mask(exclusions):
         return jax_utils.named_tree_map(decay, params, sep='/')
 
     return weight_decay_mask
+
 
 def get_generic_mask(exclusions, true_set, false_set):
     """ Return a mask function that computes the pytree masks

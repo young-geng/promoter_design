@@ -18,9 +18,9 @@ import mlxu.jax_utils as jax_utils
 
 import pdb
 
-from data import FinetuneDataset
+from promoter_design.promoter_modelling.data import FinetuneDataset
 from promoter_design.promoter_modelling.model import FinetuneNetwork
-from utils import average_metrics, global_norm, get_weight_decay_mask
+from promoter_design.utils import average_metrics, global_norm, get_weight_decay_mask
 
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
