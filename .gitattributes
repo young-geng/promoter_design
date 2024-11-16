@@ -1,0 +1,4 @@
+data/SuRE/SuRE45_HG03464 filter=lfs diff=lfs merge=lfs -text
+data/SuRE/SuRE42_HG02601 filter=lfs diff=lfs merge=lfs -text
+data/SuRE/SuRE43_GM18983 filter=lfs diff=lfs merge=lfs -text
+data/SuRE/SuRE44_HG01241 filter=lfs diff=lfs merge=lfs -text
