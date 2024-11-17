@@ -20,8 +20,8 @@ from ml_collections import ConfigDict
 
 import pdb
 
-from promoter_design.promoter_modelling.data import FinetuneDataset
-from promoter_design.promoter_modelling.model import FinetuneNetwork
+from promoter_design.workflow.data import FinetuneDataset
+from promoter_design.workflow.model import FinetuneNetwork
 from promoter_design.utils import average_metrics, global_norm, get_weight_decay_mask, get_generic_mask
 
 

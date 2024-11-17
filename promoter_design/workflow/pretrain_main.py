@@ -13,8 +13,8 @@ import optax
 import einops
 import mlxu.jax_utils as jax_utils
 
-from promoter_design.promoter_modelling.data import PretrainDataset
-from promoter_design.promoter_modelling.model import PretrainNetwork
+from promoter_design.workflow.data import PretrainDataset
+from promoter_design.workflow.model import PretrainNetwork
 from promoter_design.utils import (
     average_metrics, global_norm, get_weight_decay_mask, compute_corr_metrics
 )

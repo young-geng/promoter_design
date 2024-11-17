@@ -12,7 +12,7 @@ from flax.jax_utils import replicate, unreplicate
 import einops
 import mlxu.jax_utils as jax_utils
 
-from promoter_design.promoter_modelling.model import FinetuneNetwork
+from promoter_design.workflow.model import FinetuneNetwork
 
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(

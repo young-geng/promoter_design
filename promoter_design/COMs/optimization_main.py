@@ -10,8 +10,8 @@ from flax.jax_utils import replicate
 import einops
 import mlxu.jax_utils as jax_utils
 
-from promoter_design.promoter_modelling.data import FinetuneDataset
-from promoter_design.promoter_modelling.model import FinetuneNetwork
+from promoter_design.workflow.data import FinetuneDataset
+from promoter_design.workflow.model import FinetuneNetwork
 from promoter_design.COMs.seq_opt import SequenceOptimizer, ExpressionObjective
 
 
