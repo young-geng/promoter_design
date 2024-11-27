@@ -27,7 +27,7 @@ We run our workflow to design cell-type-specific promoter sequences for Jurkat, 
 
 To improve the data efficiency of our workflow, we pretrain models on existing data from MPRAs. We follow Reddy, Herschl, and Geng et al. (2023) [1] and pretrain on data from SuRE [3] and Sharpr-MPRA [4]:
 
-1. We provide the processed SuRE data in the `data` directory. Processing was performed using the [code](https://github.com/anikethjr/promoter_models/blob/main/promoter_modelling/dataloaders/SuRE.py) provided by Reddy, Herschl, and Geng et al. (2023) [1].
+1. We provide the processed SuRE data at [this link](https://huggingface.co/datasets/anikethjr/promoter_design/tree/main). Please download the data and place the SuRE directory in the `data` directory. Processing was performed using the [code](https://github.com/anikethjr/promoter_models/blob/main/promoter_modelling/dataloaders/SuRE.py) provided by Reddy, Herschl, and Geng et al. (2023) [1].
 2. The processed Sharpr-MPRA data was made available by Movva et al. [5]. Please download the data from the following links and place them in the `data/Sharpr_MPRA` directory:
     - [train.hdf5](https://mitra.stanford.edu/kundaje/projects/mpra/data/train.hdf5)
     - [valid.hdf5](https://mitra.stanford.edu/kundaje/projects/mpra/data/valid.hdf5)
