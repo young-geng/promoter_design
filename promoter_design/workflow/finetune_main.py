@@ -1,11 +1,10 @@
 from functools import partial
 import numpy as np
-import scipy.stats as stats
-from sklearn.metrics import r2_score
 import mlxu
 from tqdm import tqdm, trange
 from pprint import pprint, pformat
-import os
+import matplotlib.pyplot as plt
+import wandb
 
 import jax
 import jax.numpy as jnp
@@ -16,36 +15,90 @@ import optax
 import einops
 import mlxu.jax_utils as jax_utils
 
-import pdb
-
 from promoter_design.workflow.data import FinetuneDataset
 from promoter_design.workflow.model import FinetuneNetwork
-from promoter_design.utils import average_metrics, global_norm, get_weight_decay_mask
+from promoter_design.COMs.seq_opt import SequenceOptimizer, ExpressionObjective
+from promoter_design.utils import (
+    average_metrics, global_norm, get_weight_decay_mask, compute_corr_metrics
+)
 
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=42,
-    total_steps=3000,
+    total_steps=100000,
     log_freq=20,
-    eval_freq=125,
+    eval_freq=1000,
+    val_steps=0,
+    test_steps=0,
     save_model=False,
+    generate_sequences=True,
     remat=True,
     accumulate_gradient_steps=1,
-    lr=1e-5,
-    lr_warmup_steps=100,
-    weight_decay=1e-4,
-    k562_loss_weight=1.0,
-    hepg2_loss_weight=1.0,
-    mpra_loss_weight=1.0,
+    lr=1e-4,
+    lr_warmup_steps=1000,
+    weight_decay=1e-3,
+    use_coms_loss=False,
+    coms_loss_weight=0.0,
+    clip_coms_loss=True,
     clip_gradient=10.0,
-    load_pretrained='./saved_models/lentiMPRA_pretraining_savio/best_params.pkl',
+    load_pretrained='',
+    expression_objective=ExpressionObjective.get_default_config(),
+    sequence_optimizer=SequenceOptimizer.get_default_config(),
     finetune_network=FinetuneNetwork.get_default_config(),
-    train_data=FinetuneDataset.get_default_config({"split": "train", "path": "./data/finetune_data.pkl", "batch_size": 96}),
-    val_data=FinetuneDataset.get_default_config({"split": "val", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
-    test_data=FinetuneDataset.get_default_config({"split": "test", "path": "./data/finetune_data.pkl", "sequential_sample": True, "batch_size": 96}),
-    logger=mlxu.WandBLogger.get_default_config({"output_dir": "./saved_models", "project": "promoter_design_jax", "wandb_dir": "./wandb", "online": True, \
-                                                "experiment_id": "finetune_vanilla_lentiMPRA_pretraining"}),
+    train_data=FinetuneDataset.get_default_config(),
+    val_data=FinetuneDataset.get_default_config(),
+    test_data=FinetuneDataset.get_default_config(),
+    generation_data=FinetuneDataset.get_default_config(),
+    logger=mlxu.WandBLogger.get_default_config(),
 )
+
+
+def plot_diffs(results):
+    def plot_diff(target, base):
+        plt.scatter(
+            results[f'{target}_output'],
+            results[f'{base}_output'],
+            label='dataset values',
+            color='blue', alpha=0.2, s=2
+        )
+        plt.scatter(
+            results[f'ds_{target}_pred'],
+            results[f'ds_{base}_pred'],
+            label='dataset predicted values',
+            color='green', alpha=0.2, s=2
+        )
+        plt.scatter(
+            results[f'{target}_opt_seq_{target}_pred'],
+            results[f'{target}_opt_seq_{base}_pred'],
+            label='optimized predicted values',
+            color='orange', alpha=0.2, s=2
+        )
+        plt.xlim(-1, 5)
+        plt.ylim(-1, 5)
+        plt.title(f'Optimization target: {target}')
+        plt.xlabel(target)
+        plt.ylabel(base)
+        plt.plot(np.linspace(-1, 5, 10), np.linspace(-1, 5, 10), color='red')
+
+    figure = plt.figure(figsize=(9, 15))
+
+    plt.subplot(3, 2, 1)
+    plot_diff('thp1', 'jurkat')
+    plt.subplot(3, 2, 2)
+    plot_diff('thp1', 'k562')
+
+    plt.subplot(3, 2, 3)
+    plot_diff('jurkat', 'thp1')
+    plt.subplot(3, 2, 4)
+    plot_diff('jurkat', 'k562')
+
+    plt.subplot(3, 2, 5)
+    plot_diff('k562', 'thp1')
+    plt.subplot(3, 2, 6)
+    plot_diff('k562', 'jurkat')
+
+    plt.legend(loc='lower center', bbox_to_anchor=(-0.1, -0.35), markerscale=4)
+    return figure
 
 
 def main(argv):
@@ -57,8 +110,12 @@ def main(argv):
     jax_device_count = jax.device_count()
 
     train_dataset = FinetuneDataset(FLAGS.train_data)
-    val_dataset = FinetuneDataset(FLAGS.val_data)
-    test_dataset = FinetuneDataset(FLAGS.test_data)
+
+    if FLAGS.val_steps > 0:
+        val_dataset = FinetuneDataset(FLAGS.val_data)
+
+    if FLAGS.test_steps > 0:
+        test_dataset = FinetuneDataset(FLAGS.test_data)
 
     model = FinetuneNetwork(FLAGS.finetune_network)
     params = model.init(
@@ -98,13 +155,235 @@ def main(argv):
         tx=optimizer,
         apply_fn=None
     )
+    del params
+
+    sequence_optimizer = SequenceOptimizer(FLAGS.sequence_optimizer)
+    expression_objective = ExpressionObjective(FLAGS.expression_objective)
 
     def compute_loss(batch, thp1_output, jurkat_output, k562_output):
         thp1_loss = jnp.mean(jnp.square(thp1_output - batch['thp1_output']))
         jurkat_loss = jnp.mean(jnp.square(jurkat_output - batch['jurkat_output']))
         k562_loss = jnp.mean(jnp.square(k562_output - batch['k562_output']))
-        loss = thp1_loss + jurkat_loss + k562_loss
-        return loss, locals()
+
+        thp1_corr, thp1_rank_corr, thp1_r2 = compute_corr_metrics(
+            jax.lax.all_gather(thp1_output, axis_name='dp').reshape(-1),
+            jax.lax.all_gather(batch['thp1_output'], axis_name='dp').reshape(-1),
+        )
+        jurkat_corr, jurkat_rank_corr, jurkat_r2 = compute_corr_metrics(
+            jax.lax.all_gather(jurkat_output, axis_name='dp').reshape(-1),
+            jax.lax.all_gather(batch['jurkat_output'], axis_name='dp').reshape(-1),
+        )
+        k562_corr, k562_rank_corr, k562_r2 = compute_corr_metrics(
+            jax.lax.all_gather(k562_output, axis_name='dp').reshape(-1),
+            jax.lax.all_gather(batch['k562_output'], axis_name='dp').reshape(-1),
+        )
+
+        supervised_loss = thp1_loss + jurkat_loss + k562_loss
+
+        aux_values = dict(
+            thp1_loss=thp1_loss,
+            jurkat_loss=jurkat_loss,
+            k562_loss=k562_loss,
+            thp1_corr=thp1_corr,
+            thp1_rank_corr=thp1_rank_corr,
+            thp1_r2=thp1_r2,
+            jurkat_corr=jurkat_corr,
+            jurkat_rank_corr=jurkat_rank_corr,
+            jurkat_r2=jurkat_r2,
+            k562_corr=k562_corr,
+            k562_rank_corr=k562_rank_corr,
+            k562_r2=k562_r2,
+            supervised_loss=supervised_loss,
+        )
+
+        return supervised_loss, aux_values
+
+    def compute_coms_loss(params, rng, batch):
+        rng_generator = jax_utils.JaxRNG(rng)
+        starting_seq = jax.nn.one_hot(batch['sequences'], 5, dtype=jnp.float32)[:, :, :4]
+
+        def objectve_funtion(seq, rng, params, target='all'):
+            rng_generator = jax_utils.JaxRNG(rng)
+            thp1_pred, jurkat_pred, k562_pred = model.apply(
+                params,
+                inputs=seq,
+                deterministic=False,
+                rngs=rng_generator(model.rng_keys()),
+            )
+            thp1_diff, jurkat_diff, k562_diff = expression_objective(
+                thp1_pred, jurkat_pred, k562_pred
+            )
+
+            if target == 'thp1':
+                return thp1_diff
+            elif target == 'jurkat':
+                return jurkat_diff
+            elif target == 'k562':
+                return k562_diff
+            elif target == 'all':
+                return dict(
+                    thp1_pred=thp1_pred,
+                    jurkat_pred=jurkat_pred,
+                    k562_pred=k562_pred,
+                    thp1_diff=thp1_diff,
+                    jurkat_diff=jurkat_diff,
+                    k562_diff=k562_diff,
+                )
+            else:
+                raise ValueError(f'Unknown target {target}')
+
+        def count_mutations(start, end):
+            return jnp.sum(
+                jnp.argmax(start, axis=-1) != jnp.argmax(end, axis=-1),
+                axis=-1,
+            ).astype(jnp.float32)
+
+        starting_seq_metrics = objectve_funtion(
+            starting_seq, rng_generator(),
+            params=params, target='all'
+        )
+        ds_thp1_pred, ds_jurkat_pred, ds_k562_pred = (
+            starting_seq_metrics['thp1_pred'],
+            starting_seq_metrics['jurkat_pred'],
+            starting_seq_metrics['k562_pred'],
+        )
+        ds_thp1_diff, ds_jurkat_diff, ds_k562_diff = (
+            starting_seq_metrics['thp1_diff'],
+            starting_seq_metrics['jurkat_diff'],
+            starting_seq_metrics['k562_diff'],
+        )
+
+        thp1_optimized_seq = sequence_optimizer(
+            objectve_funtion,
+            starting_seq,
+            rng_generator(),
+            params=params,
+            target='thp1',
+        )
+        thp1_n_mutations = count_mutations(starting_seq, thp1_optimized_seq).mean()
+        opt_thp1_metrics = objectve_funtion(
+            thp1_optimized_seq, rng_generator(),
+            params=params, target='all'
+        )
+        opt_thp1_pred, opt_thp1_diff = (
+            opt_thp1_metrics['thp1_pred'],
+            opt_thp1_metrics['thp1_diff'],
+        )
+        opt_thp1_metrics = {
+            f'thp1_opt_seq_{key}': val for key, val in opt_thp1_metrics.items()
+        }
+
+        jurkat_optimized_seq = sequence_optimizer(
+            objectve_funtion,
+            starting_seq,
+            rng_generator(),
+            params=params,
+            target='jurkat',
+        )
+        jurkat_n_mutations = count_mutations(starting_seq, jurkat_optimized_seq)
+        opt_jurkat_metrics = objectve_funtion(
+            jurkat_optimized_seq, rng_generator(),
+            params=params, target='all'
+        )
+        opt_jurkat_pred, opt_jurkat_diff = (
+            opt_jurkat_metrics['jurkat_pred'],
+            opt_jurkat_metrics['jurkat_diff'],
+        )
+        opt_jurkat_metrics = {
+            f'jurkat_opt_seq_{key}': val for key, val in opt_jurkat_metrics.items()
+        }
+
+        k562_optimized_seq = sequence_optimizer(
+            objectve_funtion,
+            starting_seq,
+            rng_generator(),
+            params=params,
+            target='k562',
+        )
+        k562_n_mutations = count_mutations(starting_seq, k562_optimized_seq).mean()
+        opt_k562_metrics = objectve_funtion(
+            k562_optimized_seq, rng_generator(),
+            params=params, target='all'
+        )
+        opt_k562_pred, opt_k562_diff = (
+            opt_k562_metrics['k562_pred'],
+            opt_k562_metrics['k562_diff'],
+        )
+        opt_k562_metrics = {
+            f'k562_opt_seq_{key}': val for key, val in opt_k562_metrics.items()
+        }
+
+        thp1_gap = opt_thp1_diff - ds_thp1_diff
+        jurkat_gap = opt_jurkat_diff - ds_jurkat_diff
+        k562_gap = opt_k562_diff - ds_k562_diff
+
+        if FLAGS.clip_coms_loss:
+            coms_loss = FLAGS.coms_loss_weight * jnp.mean(
+                jnp.clip(thp1_gap, a_min=0.0) +
+                jnp.clip(jurkat_gap, a_min=0.0) +
+                jnp.clip(k562_gap, a_min=0.0)
+            )
+        else:
+            coms_loss = FLAGS.coms_loss_weight * jnp.mean(
+                thp1_gap + jurkat_gap + k562_gap
+            )
+
+        aux_values = dict(
+            coms_loss=coms_loss,
+
+            original_seq=batch['sequences'],
+            thp1_output=batch['thp1_output'],
+            jurkat_output=batch['jurkat_output'],
+            k562_output=batch['k562_output'],
+
+            ds_thp1_pred=ds_thp1_pred,
+            ds_jurkat_pred=ds_jurkat_pred,
+            ds_k562_pred=ds_k562_pred,
+            ds_thp1_diff=ds_thp1_diff,
+            ds_jurkat_diff=ds_jurkat_diff,
+            ds_k562_diff=ds_k562_diff,
+
+            thp1_optimized_seq=jnp.argmax(thp1_optimized_seq, axis=-1),
+            jurkat_optimized_seq=jnp.argmax(jurkat_optimized_seq, axis=-1),
+            k562_optimized_seq=jnp.argmax(k562_optimized_seq, axis=-1),
+
+            opt_thp1_pred=opt_thp1_pred,
+            opt_jurkat_pred=opt_jurkat_pred,
+            opt_k562_pred=opt_k562_pred,
+            opt_thp1_diff=opt_thp1_diff,
+            opt_jurkat_diff=opt_jurkat_diff,
+            opt_k562_diff=opt_k562_diff,
+            thp1_gap=thp1_gap,
+            jurkat_gap=jurkat_gap,
+            k562_gap=k562_gap,
+            thp1_n_mutations=thp1_n_mutations,
+            jurkat_n_mutations=jurkat_n_mutations,
+            k562_n_mutations=k562_n_mutations,
+
+            **opt_thp1_metrics,
+            **opt_jurkat_metrics,
+            **opt_k562_metrics,
+        )
+
+        return coms_loss, aux_values
+
+    metric_keys = [
+        'thp1_loss', 'jurkat_loss', 'k562_loss', 'supervised_loss',
+        'thp1_corr', 'thp1_rank_corr', 'thp1_r2',
+        'jurkat_corr', 'jurkat_rank_corr', 'jurkat_r2',
+        'k562_corr', 'k562_rank_corr', 'k562_r2',
+        'ds_thp1_diff', 'ds_jurkat_diff', 'ds_k562_diff',
+        'opt_thp1_diff', 'opt_jurkat_diff', 'opt_k562_diff',
+        'thp1_gap', 'jurkat_gap', 'k562_gap',
+        'thp1_n_mutations', 'jurkat_n_mutations', 'k562_n_mutations',
+        'coms_loss', 'loss'
+    ]
+
+    @partial(jax.pmap, axis_name='dp')
+    def optimization_step(params, rng, batch):
+        rng_generator = jax_utils.JaxRNG(rng)
+        _, reults = compute_coms_loss(params, rng_generator(), batch)
+        return rng_generator(), reults
 
     @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
     def train_step(train_state, rng, batch):
@@ -121,6 +400,12 @@ def main(argv):
             loss, aux_values = compute_loss(
                 batch, thp1_output, jurkat_output, k562_output
             )
+            if FLAGS.use_coms_loss:
+                coms_loss, coms_aux_values = compute_coms_loss(params, rng_generator(), batch)
+                loss += coms_loss
+                aux_values.update(coms_aux_values)
+
+            aux_values['loss'] = loss
             return loss, aux_values
 
         if FLAGS.remat:
@@ -139,8 +424,7 @@ def main(argv):
 
         metrics = jax_utils.collect_metrics(
             aux_values,
-            ['thp1_loss', 'jurkat_loss', 'k562_loss', 'loss',
-             'learning_rate', 'grad_norm', 'param_norm'],
+            metric_keys + ['learning_rate', 'grad_norm', 'param_norm'],
             prefix='train',
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
@@ -148,8 +432,8 @@ def main(argv):
         train_state = train_state.apply_gradients(grads=grads)
         return train_state, rng_generator(), metrics
 
-    @partial(jax.pmap, axis_name='dp', donate_argnums=1)
-    def eval_step(train_state, rng, batch):
+    @partial(jax.pmap, axis_name='dp', donate_argnums=1, static_broadcasted_argnums=(3,))
+    def eval_step(train_state, rng, batch, prefix='val'):
         rng_generator = jax_utils.JaxRNG(rng)
 
         thp1_output, jurkat_output, k562_output = model.apply(
@@ -161,28 +445,36 @@ def main(argv):
         loss, aux_values = compute_loss(
             batch, thp1_output, jurkat_output, k562_output
         )
+        if FLAGS.use_coms_loss:
+            coms_loss, coms_aux_values = compute_coms_loss(
+                train_state.params, rng_generator(), batch
+            )
+            loss += coms_loss
+            aux_values.update(coms_aux_values)
 
+        aux_values['loss'] = loss
         metrics = jax_utils.collect_metrics(
-            aux_values,
-            ['thp1_loss', 'jurkat_loss', 'k562_loss', 'loss'],
-            prefix='eval',
+            aux_values, metric_keys, prefix=prefix,
         )
         metrics = jax.lax.pmean(metrics, axis_name='dp')
-        return metrics, \
-            batch['thp1_output'], batch['jurkat_output'], batch['k562_output'], \
-            thp1_output, jurkat_output, k562_output, \
-            rng_generator()
+        return metrics, rng_generator()
 
     train_iterator = train_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
-    
+
+    if FLAGS.val_steps > 0:
+        val_iterator = val_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+
+    if FLAGS.test_steps > 0:
+        test_iterator = test_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+
     rng = jax.device_put_sharded(
         list(jax_utils.next_rng(jax.device_count())),
         jax.devices(),
     )
     train_state = replicate(train_state)
 
-    # best_val_loss = np.inf
-    best_eval_avg_SpearmanR = -np.inf
+    best_val_loss = np.inf
+    best_params = None
 
     for step in trange(FLAGS.total_steps, ncols=0):
         train_state, rng, train_metrics = train_step(
@@ -195,232 +487,73 @@ def main(argv):
             tqdm.write(pformat(train_metrics))
 
         if step % FLAGS.eval_freq == 0:
-            eval_metrics = []
-            all_y = {'THP1': [], 'Jurkat': [], 'K562': []}
-            all_yhat = {'THP1': [], 'Jurkat': [], 'K562': []}
-
-            val_iterator = val_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
-            batch = next(val_iterator)
-            while batch is not None:
-                metrics, \
-                    thp1_y, jurkat_y, k562_y, \
-                        thp1_output, jurkat_output, k562_output, rng = eval_step(
-                    train_state, rng, batch
-                )
-                eval_metrics.append(unreplicate(metrics))
-
-                thp1_y = jax.device_get(thp1_y)
-                jurkat_y = jax.device_get(jurkat_y)
-                k562_y = jax.device_get(k562_y)
-
-                thp1_y = einops.rearrange(thp1_y, 'd b -> (d b)')
-                jurkat_y = einops.rearrange(jurkat_y, 'd b -> (d b)')
-                k562_y = einops.rearrange(k562_y, 'd b -> (d b)')
-
-                thp1_output = jax.device_get(thp1_output)
-                jurkat_output = jax.device_get(jurkat_output)
-                k562_output = jax.device_get(k562_output)
-
-                thp1_output = einops.rearrange(thp1_output, 'd b -> (d b)')
-                jurkat_output = einops.rearrange(jurkat_output, 'd b -> (d b)')
-                k562_output = einops.rearrange(k562_output, 'd b -> (d b)')
-
-                all_y['THP1'].append(thp1_y)
-                all_y['Jurkat'].append(jurkat_y)
-                all_y['K562'].append(k562_y)
-
-                all_yhat['THP1'].append(thp1_output)
-                all_yhat['Jurkat'].append(jurkat_output)
-                all_yhat['K562'].append(k562_output)
-
-                batch = next(val_iterator)
-
-            eval_metrics = average_metrics(jax.device_get(eval_metrics))
-
-            all_y = {k: np.hstack(v).reshape(-1) for k, v in all_y.items()}
-            all_yhat = {k: np.hstack(v).reshape(-1) for k, v in all_yhat.items()}
-
-            for k in all_y:
-                # Compute Pearson correlation
-                eval_metrics[f'eval/{k}_PearsonR'] = stats.pearsonr(
-                    all_y[k], all_yhat[k]
-                )[0]
-                # Compute Spearman correlation
-                eval_metrics[f'eval/{k}_SpearmanR'] = stats.spearmanr(
-                    all_y[k], all_yhat[k]
-                )[0]
-                # Compute R2
-                eval_metrics[f'eval/{k}_R2'] = r2_score(
-                    all_y[k], all_yhat[k]
-                )
-            
-            # Compute average Pearson correlation
-            eval_metrics['eval/avg_PearsonR'] = np.mean([
-                eval_metrics[f'eval/{k}_PearsonR'] for k in all_y
-            ])
-            # Compute average Spearman correlation
-            eval_metrics['eval/avg_SpearmanR'] = np.mean([
-                eval_metrics[f'eval/{k}_SpearmanR'] for k in all_y
-            ])
-            # Compute average R2
-            eval_metrics['eval/avg_R2'] = np.mean([
-                eval_metrics[f'eval/{k}_R2'] for k in all_y
-            ])
-
-            # if eval_metrics['eval/loss'] < best_eval_loss:
-            #     best_eval_loss = eval_metrics['eval/loss']
-            #     if FLAGS.save_model:
-            #         logger.save_pickle(
-            #             jax.device_get(unreplicate(train_state).params),
-            #             'best_params.pkl',
-            #         )
-
-            if eval_metrics['eval/avg_SpearmanR'] > best_eval_avg_SpearmanR:
-                best_eval_avg_SpearmanR = eval_metrics['eval/avg_SpearmanR']
-                if FLAGS.save_model:
-                    logger.save_pickle(
-                        jax.device_get(unreplicate(train_state).params),
-                        'best_params.pkl',
+            if FLAGS.val_steps > 0:
+                eval_metrics = []
+                for _ in range(FLAGS.val_steps):
+                    metrics, rng = eval_step(
+                        train_state, rng, next(val_iterator), 'val'
                     )
+                    eval_metrics.append(unreplicate(metrics))
+                eval_metrics = average_metrics(jax.device_get(eval_metrics))
 
-            # eval_metrics['eval/best_loss'] = best_eval_loss
-            eval_metrics['eval/best_avg_SpearmanR'] = best_eval_avg_SpearmanR
-            eval_metrics['step'] = step
-            logger.log(eval_metrics)
-            tqdm.write(pformat(eval_metrics))
-    
-    # load best params
-    if FLAGS.save_model:
-        print("Loading best params...")
-        train_state = train_state.replace(
-            params=mlxu.utils.load_pickle(os.path.join(logger.output_dir, 'best_params.pkl'))
-        )
-        train_state = replicate(train_state)
+                if eval_metrics['val/loss'] < best_val_loss:
+                    best_val_loss = eval_metrics['val/loss']
+                    best_params = jax.device_get(unreplicate(train_state).params)
+                    if FLAGS.save_model:
+                        save_data = {
+                            'params': best_params,
+                            'flags': mlxu.user_flags_to_config_dict(FLAGS, FLAGS_DEF),
+                            'model_config': model.get_default_config(model.config_updates),
+                        }
+                        logger.save_pickle(save_data, 'best_model.pkl')
 
-    # best val metrics
-    val_iterator = val_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
-    batch = next(val_iterator)
-    all_y = {'THP1': [], 'Jurkat': [], 'K562': []}
-    all_yhat = {'THP1': [], 'Jurkat': [], 'K562': []}
-    while batch is not None:
-        metrics, \
-            thp1_y, jurkat_y, k562_y, \
-                thp1_output, jurkat_output, k562_output, rng = eval_step(
-            train_state, rng, batch
-        )
-        
-        thp1_y = jax.device_get(thp1_y)
-        jurkat_y = jax.device_get(jurkat_y)
-        k562_y = jax.device_get(k562_y)
+                eval_metrics['val/best_loss'] = best_val_loss
+                eval_metrics['step'] = step
+                logger.log(eval_metrics)
+                tqdm.write(pformat(eval_metrics))
 
-        thp1_y = einops.rearrange(thp1_y, 'd b -> (d b)')
-        jurkat_y = einops.rearrange(jurkat_y, 'd b -> (d b)')
-        k562_y = einops.rearrange(k562_y, 'd b -> (d b)')
+            if FLAGS.test_steps > 0:
+                eval_metrics = []
+                for _ in range(FLAGS.test_steps):
+                    metrics, rng = eval_step(
+                        train_state, rng, next(test_iterator), 'test'
+                    )
+                    eval_metrics.append(unreplicate(metrics))
+                eval_metrics = average_metrics(jax.device_get(eval_metrics))
+                eval_metrics['step'] = step
+                logger.log(eval_metrics)
+                tqdm.write(pformat(eval_metrics))
 
-        thp1_output = jax.device_get(thp1_output)
-        jurkat_output = jax.device_get(jurkat_output)
-        k562_output = jax.device_get(k562_output)
+    if best_params is None:
+        best_params = jax.device_get(unreplicate(train_state).params)
 
-        thp1_output = einops.rearrange(thp1_output, 'd b -> (d b)')
-        jurkat_output = einops.rearrange(jurkat_output, 'd b -> (d b)')
-        k562_output = einops.rearrange(k562_output, 'd b -> (d b)')
+    del train_state
 
-        all_y['THP1'].append(thp1_y)
-        all_y['Jurkat'].append(jurkat_y)
-        all_y['K562'].append(k562_y)
+    if FLAGS.generate_sequences:
+        FLAGS.generation_data.sequential_sample = True  # Ensure we iterate over the whole dataset
+        dataset = FinetuneDataset(FLAGS.generation_data)
+        best_params = replicate(best_params)
 
-        all_yhat['THP1'].append(thp1_output)
-        all_yhat['Jurkat'].append(jurkat_output)
-        all_yhat['K562'].append(k562_output)
+        data_iterator = dataset.batch_iterator(pmap_axis_dim=jax_device_count)
+        steps = len(dataset) // FLAGS.generation_data.batch_size
 
-        batch = next(val_iterator)
-    
-    all_y = {k: np.hstack(v).reshape(-1) for k, v in all_y.items()}
-    all_yhat = {k: np.hstack(v).reshape(-1) for k, v in all_yhat.items()}
-    print("y shape: {}".format(all_y["THP1"].shape))
-    print("yhat shape: {}".format(all_yhat["THP1"].shape))
+        results = []
 
-    val_metrics = {}
-    for k in all_y:
-        # Compute Pearson correlation
-        val_metrics[f'val/{k}_PearsonR'] = stats.pearsonr(
-            all_y[k], all_yhat[k]
-        )[0]
-        # Compute Spearman correlation
-        val_metrics[f'val/{k}_SpearmanR'] = stats.spearmanr(
-            all_y[k], all_yhat[k]
-        )[0]
-        # Compute R2
-        val_metrics[f'val/{k}_R2'] = r2_score(
-            all_y[k], all_yhat[k]
-        )
-    
-    # print best val metrics
-    print('Best val metrics:')
-    print(pformat(val_metrics))
+        for _, batch in zip(trange(steps, ncols=0), data_iterator):
+            rng, r = optimization_step(best_params, rng, batch)
 
-    # test metrics
-    test_iterator = test_dataset.batch_iterator(pmap_axis_dim=jax_device_count)
-    batch = next(test_iterator)
-    all_y = {'THP1': [], 'Jurkat': [], 'K562': []}
-    all_yhat = {'THP1': [], 'Jurkat': [], 'K562': []}
-    while batch is not None:
-        metrics, \
-            thp1_y, jurkat_y, k562_y, \
-                thp1_output, jurkat_output, k562_output, rng = eval_step(
-            train_state, rng, batch
-        )
-        
-        thp1_y = jax.device_get(thp1_y)
-        jurkat_y = jax.device_get(jurkat_y)
-        k562_y = jax.device_get(k562_y)
+            results.append({
+                key: einops.rearrange(val, 'd b ... -> (d b) ...')
+                for key, val in jax.device_get(r).items()
+                if len(val.shape) > 1
+            })
 
-        thp1_y = einops.rearrange(thp1_y, 'd b -> (d b)')
-        jurkat_y = einops.rearrange(jurkat_y, 'd b -> (d b)')
-        k562_y = einops.rearrange(k562_y, 'd b -> (d b)')
-
-        thp1_output = jax.device_get(thp1_output)
-        jurkat_output = jax.device_get(jurkat_output)
-        k562_output = jax.device_get(k562_output)
-
-        thp1_output = einops.rearrange(thp1_output, 'd b -> (d b)')
-        jurkat_output = einops.rearrange(jurkat_output, 'd b -> (d b)')
-        k562_output = einops.rearrange(k562_output, 'd b -> (d b)')
-
-        all_y['THP1'].append(thp1_y)
-        all_y['Jurkat'].append(jurkat_y)
-        all_y['K562'].append(k562_y)
-
-        all_yhat['THP1'].append(thp1_output)
-        all_yhat['Jurkat'].append(jurkat_output)
-        all_yhat['K562'].append(k562_output)
-
-        batch = next(test_iterator)
-
-    all_y = {k: np.hstack(v).reshape(-1) for k, v in all_y.items()}
-    all_yhat = {k: np.hstack(v).reshape(-1) for k, v in all_yhat.items()}
-    print("y shape: {}".format(all_y["THP1"].shape))
-    print("yhat shape: {}".format(all_yhat["THP1"].shape))
-    
-    test_metrics = {}
-    for k in all_y:
-        # Compute Pearson correlation
-        test_metrics[f'test/{k}_PearsonR'] = stats.pearsonr(
-            all_y[k], all_yhat[k]
-        )[0]
-        # Compute Spearman correlation
-        test_metrics[f'test/{k}_SpearmanR'] = stats.spearmanr(
-            all_y[k], all_yhat[k]
-        )[0]
-        # Compute R2
-        test_metrics[f'test/{k}_R2'] = r2_score(
-            all_y[k], all_yhat[k]
-        )
-
-    # print test metrics
-    logger.log(test_metrics)
-    print('Test metrics:')
-    print(pformat(test_metrics))
+        results = {
+            key: np.concatenate([r[key] for r in results], axis=0)
+            for key in results[0].keys()
+        }
+        logger.save_pickle(results, 'optimized_seqs.pkl')
+        logger.log({f'opt_seq_diffs': wandb.Image(plot_diffs(results))})
 
 
 if __name__ == '__main__':
