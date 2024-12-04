@@ -2,16 +2,13 @@
 
 This repository provides a flexible, data-efficient, and scalable workflow for designing cell-type-specific promoter sequences by leveraging transfer learning [1] and conservative model-based optimization [2]. Please cite the following paper if you use our code or data:
 ```bibtex
-@article {promoter_design_reddy_geng_herschl_2024,
-	author = {Reddy, Aniketh Janardhan and Geng, Xinyang and Herschl, Michael H. and Kolli, Sathvik and Kumar, Aviral and Hsu, Patrick D. and Levine, Sergey and Ioannidis, Nilah M.},
-	title = {Designing Cell-Type-Specific Promoter Sequences Using Conservative Model-Based Optimization},
-	elocation-id = {2024.06.23.600232},
-	year = {2024},
-	doi = {10.1101/2024.06.23.600232},
-	publisher = {Cold Spring Harbor Laboratory},
-	URL = {https://www.biorxiv.org/content/early/2024/06/23/2024.06.23.600232},
-	eprint = {https://www.biorxiv.org/content/early/2024/06/23/2024.06.23.600232.full.pdf},
-	journal = {bioRxiv}
+@inproceedings{
+    promoter_design_reddy_geng_herschl_2024,
+    title={Designing Cell-Type-Specific Promoter Sequences Using Conservative Model-Based Optimization},
+    author={Aniketh Janardhan Reddy and Xinyang Geng and Michael H Herschl and Sathvik Kolli and Aviral Kumar and Patrick D Hsu and Sergey Levine and Nilah M Ioannidis},
+    booktitle={The Thirty-eighth Annual Conference on Neural Information Processing Systems},
+    year={2024},
+    url={https://openreview.net/forum?id=F8DWffLkYG}
 }
 ```
 
@@ -80,7 +77,7 @@ We fine-tune the pretrained models on data from Jurkat, K562, and THP1 cell line
 2. Run the following commands to fine-tune the pretrained models and generate candidate sequences. The commands sequentially fine-tune 6 different models, each with a different level of conservatism. Then, it performs sequence design for each of the three cells using the fine-tuned models. Again, we performed training on an NVIDIA DGX A100 with 8 A100 GPUs and each task took approximately 2 hours:
     ```bash
     mkdir -p models/finetune
-    PRETRAINED_MODEL_PATH=$(find models/pretrain -name best_params.pkl)
+    export PRETRAINED_MODEL_PATH=$(find models/pretrain -name best_params.pkl)
 
     parallel -j1 --linebuffer \
         python -m promoter_design.workflow.finetune_main \
@@ -128,6 +125,58 @@ We fine-tune the pretrained models on data from Jurkat, K562, and THP1 cell line
         ::: 1.0 \
         ::: 'linear' \
         ::: 1.5
+    ```
+
+### Step 3: Train ensemble for final sequence selection
+
+From the previous step, we obtain many candidate sequences for each cell line. Our final sequence selection algorithm uses an ensemble of models to evaluate the sequences. We train it as follows:
+
+1. The ensemble is trained using a different split of the data used for fine-tuning. Run the following command to format the data for training:
+    ```bash
+    python -m promoter_design.workflow.process_finetune_data --input_file data/finetuning_data_ensemble.csv --output_file data/finetune_data_ensemble.pkl
+    ```
+
+2. Run the following commands to train the ensemble. The commands sequentially train 36 different models, each with a different output head configuration. We performed training on an NVIDIA DGX A100 with 8 A100 GPUs:
+    ```bash
+    mkdir -p models/ensemble
+    export PRETRAINED_MODEL_PATH=$(find models/pretrain -name best_params.pkl)
+
+    parallel -j1 --linebuffer \
+        python -m promoter_design.workflow.finetune_main \
+            --seed=34 \
+            --total_steps=250 \
+            --log_freq=1 \
+            --eval_freq=25 \
+            --val_steps=3 \
+            --test_steps=7 \
+            --save_model=True \
+            --load_pretrained="$PRETRAINED_MODEL_PATH" \
+            --lr=5e-5 \
+            --lr_warmup_steps=10 \
+            --weight_decay=3e-3 \
+            --use_coms_loss=False \
+            --generate_sequences=False \
+            --finetune_network.output_head_num_layers={1} \
+            --finetune_network.output_head_hidden_dim={2} \
+            --finetune_network.output_head_activation={3} \
+            --train_data.path="$PROJECT_HOME/data/finetune_data_ensemble.pkl" \
+            --train_data.split='train' \
+            --train_data.batch_size=512 \
+            --val_data.path="$PROJECT_HOME/data/finetune_data_ensemble.pkl" \
+            --val_data.split='val' \
+            --val_data.sequential_sample=True \
+            --val_data.batch_size=512 \
+            --test_data.path="$PROJECT_HOME/data/finetune_data_ensemble.pkl" \
+            --test_data.split='test' \
+            --test_data.sequential_sample=True \
+            --test_data.batch_size=512 \
+            --logger.output_dir="$OUTPUT_DIR/$EXP_NAME" \
+            --logger.online=True \
+            --logger.prefix='promoter_design' \
+            --logger.project="ensemble" \
+        ::: 2 4 8 \
+        ::: 512 1024 2048 \
+        ::: 'tanh' 'gelu' 'relu' 'silu'
     ```
 
 ## References:

@@ -57,7 +57,7 @@ def main(argv):
     sure_test_sequences, sure_test_k562_labels, sure_test_hepg2_labels = process_sure_data('test')
 
     mpra_train_sequences, mpra_train_output = process_mpra_data('train')
-    mpra_val_sequences, mpra_val_output = process_mpra_data('val')
+    mpra_val_sequences, mpra_val_output = process_mpra_data('valid')
     mpra_test_sequences, mpra_test_output = process_mpra_data('test')
 
     all_data = {
