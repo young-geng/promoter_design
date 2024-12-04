@@ -127,6 +127,13 @@ We fine-tune the pretrained models on data from Jurkat, K562, and THP1 cell line
         ::: 1.5
     ```
 
+3. Run the following command to collect all the generated sequences into a single file:
+    ```bash
+    python -m promoter_design.workflow.collect_sequences \
+        --designed_sequences_dir="models/finetune" \
+        --output_file="data/coms_seqs.pkl"
+    ```
+
 ### Step 3: Train ensemble for final sequence selection
 
 From the previous step, we obtain many candidate sequences for each cell line. Our final sequence selection algorithm uses an ensemble of models to evaluate the sequences. We train it as follows:
@@ -178,6 +185,20 @@ From the previous step, we obtain many candidate sequences for each cell line. O
         ::: 512 1024 2048 \
         ::: 'tanh' 'gelu' 'relu' 'silu'
     ```
+
+### Step 4: Evaluate the designed sequences using the ensemble
+
+Next, we evaluate the designed sequences using the ensemble of models. Run the following command to evaluate the sequences:
+```bash
+export ENSEMBLE_MODEL_DIR="models/ensemble"
+
+python -m promoter_design.workflow.eval_ensemble_main \
+    --load_model_dir="$ENSEMBLE_MODEL_DIR" \
+    --load_sequence="data/coms_seqs.pkl" \
+    --output_file="data/coms_seqs_ensemble_eval.pkl" \
+    --sequence_dict_keys='jurkat_optimized_seq,k562_optimized_seq,thp1_optimized_seq' \
+    --batch_size=512
+```
 
 ## References:
 1. Reddy, Aniketh Janardhan, Michael H. Herschl, Xinyang Geng, Sathvik Kolli, Amy X. Lu, Aviral Kumar, Patrick D. Hsu, Sergey Levine, and Nilah M. Ioannidis. "Strategies for effectively modelling promoter-driven gene expression using transfer learning." bioRxiv (2023).

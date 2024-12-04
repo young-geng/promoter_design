@@ -382,8 +382,8 @@ def main(argv):
     @partial(jax.pmap, axis_name='dp')
     def optimization_step(params, rng, batch):
         rng_generator = jax_utils.JaxRNG(rng)
-        _, reults = compute_coms_loss(params, rng_generator(), batch)
-        return rng_generator(), reults
+        _, res = compute_coms_loss(params, rng_generator(), batch)
+        return rng_generator(), res
 
     @partial(jax.pmap, axis_name='dp', donate_argnums=(0, 1))
     def train_step(train_state, rng, batch):
@@ -552,6 +552,7 @@ def main(argv):
             key: np.concatenate([r[key] for r in results], axis=0)
             for key in results[0].keys()
         }
+        results["coms_loss_weight"] = np.ones_like(results['ds_thp1_pred']) * FLAGS.coms_loss_weight
         logger.save_pickle(results, 'optimized_seqs.pkl')
         logger.log({f'opt_seq_diffs': wandb.Image(plot_diffs(results))})
 
