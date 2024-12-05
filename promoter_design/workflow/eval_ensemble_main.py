@@ -128,6 +128,5 @@ def main(argv):
     mlxu.save_pickle(sequence_data, FLAGS.output_file)
 
 
-
 if __name__ == '__main__':
     mlxu.run(main)

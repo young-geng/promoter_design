@@ -200,6 +200,55 @@ python -m promoter_design.workflow.eval_ensemble_main \
     --batch_size=512
 ```
 
+We also require ensemble predictions for the fine-tuning data to perform final sequence selection. Run the following commands to prepare and evaluate the fine-tuning data:
+```bash
+export ENSEMBLE_MODEL_DIR="models/ensemble"
+
+python -m promoter_design.workflow.process_sequence_set \
+    --input_file="data/finetuning_data.csv" \
+    --output_file="data/dataset_sequences.pkl" \
+    --sequence_column='sequence'
+
+python -m promoter_design.workflow.eval_ensemble_main \
+    --load_model_dir="$ENSEMBLE_MODEL_DIR" \
+    --load_sequence="data/dataset_sequences.pkl" \
+    --output_file="data/dataset_sequences_ensemble_eval.pkl" \
+    --sequence_dict_keys='sequences' \
+    --batch_size=512
+```
+
+### Step 5: Final sequence selection
+
+To perform final sequence selection, we use a greedy algorithm to select a set of sequences that are diverse and have high predicted differential expression. Run the following commands to select the sequence set:
+
+1. First, we apply a basic filter to remove designed sequences that are either not predicted to have differential expression in the target cell line or have absolute expression lower than the 90th percentile of the fine-tuning data in the target cell line (predictions are the mean of the ensemble predictions). Run the following command to filter the sequences:
+    ```bash
+    python -m promoter_design.workflow.filter_sequences \
+        --designed_sequences_file="data/coms_seqs_ensemble_eval.pkl" \
+        --dataset_file="data/dataset_sequences_ensemble_eval.pkl" \
+        --output_file="data/filtered_coms_sequences_ensemble.parquet" \
+        --expression_percentile_thres=90 \
+        --design_method="COMs"
+    ```
+
+2. Next, we compute pairwise edit and k-mer distances (k=6) between all filtered sequences. Run the following command to compute the distances:
+    ```bash
+    python -m promoter_design.workflow.compute_pairwise_seq_distances \
+        --sequences_file="data/filtered_coms_sequences_ensemble.parquet" \
+        --ensemble_data_file="data/coms_seqs_ensemble_eval.pkl" \
+        --output_file="data/filtered_coms_sequences_ensemble_with_distances.pkl"
+        --kmer_k=6
+    ```
+
+3. Finally, we use a greedy algorithm to select a set of sequences by running the following command. Here, ``distance_coef`` corresponds to the diversity coefficient $\beta$ in our paper, and ``n_selections`` corresponds to the number of sequences to select per cell line. In our paper, for COMs, we use ``distance_coef=0.0`` and ``n_selections=4000``. This can be adjusted based on the need to boost diversity and the number of sequences required, respectively. The final selected sequences are stored in the `data/final_designs.pkl` file.
+    ```bash
+    python -m promoter_design.workflow.final_sequence_selection \
+        --input_file="data/filtered_coms_sequences_ensemble_with_distances.pkl" \
+        --output_file="data/final_designs.pkl" \
+        --distance_coef=10.0 \
+        --n_selections=4000
+    ```
+
 ## References:
 1. Reddy, Aniketh Janardhan, Michael H. Herschl, Xinyang Geng, Sathvik Kolli, Amy X. Lu, Aviral Kumar, Patrick D. Hsu, Sergey Levine, and Nilah M. Ioannidis. "Strategies for effectively modelling promoter-driven gene expression using transfer learning." bioRxiv (2023).
 2. Trabucco, Brandon, Aviral Kumar, Xinyang Geng, and Sergey Levine. "Conservative objective models for effective offline model-based optimization." In International Conference on Machine Learning, pp. 10358-10368. PMLR, 2021.
