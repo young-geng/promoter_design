@@ -14,7 +14,12 @@ This repository provides a flexible, data-efficient, and scalable workflow for d
 
 ## Prerequisites
 
-1. We use Weights and Biases for logging. Please set up your environment by following the instructions [here](https://docs.wandb.ai/quickstart).
+1. The ``environment.yml`` file contains the necessary dependencies to run the code. You can create a conda environment using the following commands:
+    ```bash
+    conda env create -f environment.yml
+    conda activate promoter_design
+    ```
+2. We use Weights and Biases for logging. Please set up your environment by following the instructions [here](https://docs.wandb.ai/quickstart).
 
 ## Workflow
 
