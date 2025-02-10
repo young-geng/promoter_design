@@ -2,13 +2,16 @@
 
 This repository provides a flexible, data-efficient, and scalable workflow for designing cell-type-specific promoter sequences by leveraging transfer learning [1] and conservative model-based optimization [2]. Please cite the following paper if you use our code or data:
 ```bibtex
-@inproceedings{
-    promoter_design_reddy_geng_herschl_2024,
-    title={Designing Cell-Type-Specific Promoter Sequences Using Conservative Model-Based Optimization},
-    author={Aniketh Janardhan Reddy and Xinyang Geng and Michael H Herschl and Sathvik Kolli and Aviral Kumar and Patrick D Hsu and Sergey Levine and Nilah M Ioannidis},
-    booktitle={The Thirty-eighth Annual Conference on Neural Information Processing Systems},
-    year={2024},
-    url={https://openreview.net/forum?id=F8DWffLkYG}
+@inproceedings{promoter_design_reddy_geng_herschl_2024,
+ author = {Reddy, Aniketh Janardhan and Geng, Xinyang and Herschl, Michael and Kolli, Sathvik and Kumar, Aviral and Hsu, Patrick and Levine, Sergey and Ioannidis, Nilah},
+ booktitle = {Advances in Neural Information Processing Systems},
+ editor = {A. Globerson and L. Mackey and D. Belgrave and A. Fan and U. Paquet and J. Tomczak and C. Zhang},
+ pages = {93033--93059},
+ publisher = {Curran Associates, Inc.},
+ title = {Designing Cell-Type-Specific Promoter Sequences Using Conservative Model-Based Optimization},
+ url = {https://proceedings.neurips.cc/paper_files/paper/2024/file/a9619dd0f0d54a5cf7734add1dc38cd1-Paper-Conference.pdf},
+ volume = {37},
+ year = {2024}
 }
 ```
 
