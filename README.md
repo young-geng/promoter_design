@@ -239,11 +239,15 @@ To perform final sequence selection, we use a greedy algorithm to select a set o
         --design_method="COMs"
     ```
 
-2. Next, we compute pairwise edit and k-mer distances (k=6) between all filtered sequences. Run the following command to compute the distances:
+2. Next, we compute pairwise edit and k-mer distances (k=6) between all filtered sequences. Run the following commands to compute the distances:
     ```bash
+    python -m promoter_design.workflow.summarize_ensemble_evals \
+        --ensemble_data_file="data/coms_seqs_ensemble_eval.pkl" \
+        --summary_output_file="data/coms_seqs_ensemble_eval_summary.pkl"
+
     python -m promoter_design.workflow.compute_pairwise_seq_distances \
         --sequences_file="data/filtered_coms_sequences_ensemble.parquet" \
-        --ensemble_data_file="data/coms_seqs_ensemble_eval.pkl" \
+        --ensemble_data_file="data/coms_seqs_ensemble_eval_summary.pkl" \
         --output_file="data/filtered_coms_sequences_ensemble_with_distances.pkl"
         --kmer_k=6
     ```
