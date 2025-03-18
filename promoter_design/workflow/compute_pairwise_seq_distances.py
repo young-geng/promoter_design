@@ -21,7 +21,7 @@ jax_utils.set_random_seed(97)
 
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     sequences_file='',
-    ensemble_data_file='',
+    summary_ensemble_data_file='',
     output_file='',
     kmer_k=6,
 )
@@ -162,11 +162,11 @@ def extract_seq_data_from_df(table, ensemble_data):
 
 def main(argv):
     assert FLAGS.sequences_file != ''
-    assert FLAGS.ensemble_data_file != ''
+    assert FLAGS.summary_ensemble_data_file != ''
     assert FLAGS.output_file != ''
 
     sequences = pd.read_parquet(FLAGS.sequences_file)
-    ensemble_data = mlxu.load_pickle(FLAGS.ensemble_data_file)
+    ensemble_data = mlxu.load_pickle(FLAGS.summary_ensemble_data_file)
     seq_data = extract_seq_data_from_df(sequences, ensemble_data)
 
     seqlen = len(seq_data['k562']['sequences'][0])

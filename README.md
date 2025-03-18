@@ -247,7 +247,7 @@ To perform final sequence selection, we use a greedy algorithm to select a set o
 
     python -m promoter_design.workflow.compute_pairwise_seq_distances \
         --sequences_file="data/filtered_coms_sequences_ensemble.parquet" \
-        --ensemble_data_file="data/coms_seqs_ensemble_eval_summary.pkl" \
+        --summary_ensemble_data_file="data/coms_seqs_ensemble_eval_summary.pkl" \
         --output_file="data/filtered_coms_sequences_ensemble_with_distances.pkl"
         --kmer_k=6
     ```
